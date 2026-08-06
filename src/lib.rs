@@ -757,6 +757,33 @@ impl Spacecraft {
         self.mass
     }
 
+    /// Retrieve the `bus_mass` field.
+    pub fn bus_mass(&self) -> f64 {
+        self.bus_mass
+    }
+
+    /// Retrieve the `sail_mass` field.
+    pub fn sail_mass(&self) -> f64 {
+        self.sail_mass
+    }
+
+    // The macro cannot detect Copy so primitives are special-cased by token
+    // and everything else is returned by reference
+    /// Retrieve the `inertia_matrix` field.
+    pub fn inertia_matrix(&self) -> &InertiaMatrix {
+        &self.inertia_matrix
+    }
+
+    /// Retrieve the `sun_shadow_fraction` field.
+    pub fn sun_shadow_fraction(&self) -> &ShadowFraction {
+        &self.sun_shadow_fraction
+    }
+
+    /// Retrieve the `primary_orbited_body` field.
+    pub fn primary_orbited_body(&self) -> &CelestialBodyKind {
+        &self.primary_orbited_body
+    }
+
     /// Set the given `new_mass`.
     /// Return an error if the `new_mass` cannot be validated.
     pub fn set_mass(&mut self, new_mass: f64) -> Result<(), SpacecraftValidationError> {
@@ -768,6 +795,92 @@ impl Spacecraft {
             .map_err(SpacecraftValidationError::MassSumValidationError)?;
 
         self.mass = new_mass;
+
+        Ok(())
+    }
+
+    /// Set the given `new_bus_mass`.
+    /// Return an error if the `new_bus_mass` cannot be validated.
+    pub fn set_bus_mass(&mut self, new_bus_mass: f64) -> Result<(), SpacecraftValidationError> {
+        let mut tmp_draft: SpacecraftDraft = self.clone().into();
+        tmp_draft.bus_mass = new_bus_mass;
+        let _: () = tmp_draft.validate_bus_mass()?;
+
+        Self::validate_mass_sum(&tmp_draft)
+            .map_err(SpacecraftValidationError::MassSumValidationError)?;
+
+        self.bus_mass = new_bus_mass;
+
+        Ok(())
+    }
+
+    /// Set the given `new_sail_mass`.
+    /// Return an error if the `new_sail_mass` cannot be validated.
+    pub fn set_sail_mass(&mut self, new_sail_mass: f64) -> Result<(), SpacecraftValidationError> {
+        let mut tmp_draft: SpacecraftDraft = self.clone().into();
+        tmp_draft.sail_mass = new_sail_mass;
+        let _: () = tmp_draft.validate_sail_mass()?;
+
+        Self::validate_mass_sum(&tmp_draft)
+            .map_err(SpacecraftValidationError::MassSumValidationError)?;
+
+        self.sail_mass = new_sail_mass;
+
+        Ok(())
+    }
+
+    /// Set the given `new_inertia_matrix`.
+    /// Return an error if the `new_inertia_matrix` cannot be validated.
+    pub fn set_inertia_matrix(
+        &mut self,
+        new_inertia_matrix: InertiaMatrix,
+    ) -> Result<(), SpacecraftValidationError> {
+        let mut tmp_draft: SpacecraftDraft = self.clone().into();
+        //FIXME: same detection problem as the draft field, the conversion path through InertiaMatrixSerializable is not knowable from tokens
+        let inertia_matrix_serializable: InertiaMatrixSerializable =
+            new_inertia_matrix.clone().into();
+        tmp_draft.inertia_matrix = inertia_matrix_serializable.into();
+        let _: () = tmp_draft.validate_inertia_matrix()?;
+
+        Self::validate_mass_sum(&tmp_draft)
+            .map_err(SpacecraftValidationError::MassSumValidationError)?;
+
+        self.inertia_matrix = new_inertia_matrix;
+
+        Ok(())
+    }
+
+    /// Set the given `new_sun_shadow_fraction`.
+    /// Return an error if the `new_sun_shadow_fraction` cannot be validated.
+    pub fn set_sun_shadow_fraction(
+        &mut self,
+        new_sun_shadow_fraction: ShadowFraction,
+    ) -> Result<(), SpacecraftValidationError> {
+        let mut tmp_draft: SpacecraftDraft = self.clone().into();
+        tmp_draft.sun_shadow_fraction = new_sun_shadow_fraction.clone().into();
+        let _: () = tmp_draft.validate_sun_shadow_fraction()?;
+
+        Self::validate_mass_sum(&tmp_draft)
+            .map_err(SpacecraftValidationError::MassSumValidationError)?;
+
+        self.sun_shadow_fraction = new_sun_shadow_fraction;
+
+        Ok(())
+    }
+
+    /// Set the given `new_primary_orbited_body`.
+    /// Return an error if the `new_primary_orbited_body` cannot be validated.
+    pub fn set_primary_orbited_body(
+        &mut self,
+        new_primary_orbited_body: CelestialBodyKind,
+    ) -> Result<(), SpacecraftValidationError> {
+        let mut tmp_draft: SpacecraftDraft = self.clone().into();
+        tmp_draft.primary_orbited_body = new_primary_orbited_body.clone();
+
+        Self::validate_mass_sum(&tmp_draft)
+            .map_err(SpacecraftValidationError::MassSumValidationError)?;
+
+        self.primary_orbited_body = new_primary_orbited_body;
 
         Ok(())
     }
