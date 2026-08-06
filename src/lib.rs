@@ -90,7 +90,7 @@ pub struct InertiaMatrixSerializable {
 }
 
 /// Error type for [`InertiaMatrixSerializable::validate_realizability`] validation failures.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum SpacecraftRealizabilityValidationError {
     /// At least one off-diagonal pair differs by more than [`SYMMETRY_TOLERANCE`].
     #[error("The inertia matrix off-diagonal entries do not match within the symmetry tolerance")]
@@ -176,7 +176,7 @@ impl InertiaMatrixSerializable {
 /* --------- GENERATED ------------ */
 
 /// Error type for [`InertiaMatrixSerializable`] validation failures.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum InertiaMatrixSerializableValidationError {
     /// The value is outside the valid range `]0.0, +inf[`.
     #[error("The value must be within the range ]0.0, +inf[")]
@@ -497,7 +497,7 @@ pub struct ShadowFraction(
 /* --------- GENERATED ------------ */
 
 /// Error type for [`ShadowFraction`] validation failures.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum ShadowFractionValidationError {
     /// The value is outside the valid range `[0.0, 1.0]`.
     #[error("The value must be within the range [0.0, 1.0]")]
@@ -596,7 +596,7 @@ pub struct Spacecraft {
 }
 
 /// Error type for [`Spacecraft::validate_mass_sum`] validation failures.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum SpacecraftMassSumValidationError {
     /// The spacecraft total mass is smaller than the sum of the bus and sail mass.
     #[error(
@@ -626,7 +626,7 @@ impl Spacecraft {
 /* --------- GENERATED ------------ */
 
 /// Error type for [`Spacecraft`] validation failures.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum SpacecraftValidationError {
     /// The mass is outside the valid range `[0.0, f64::INFINITY[`.
     #[error("The mass must be within the range [0.0, f64::INFINITY[")]
