@@ -178,8 +178,8 @@ impl InertiaMatrixSerializable {
 /// Error type for [`InertiaMatrixSerializable`] validation failures.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum InertiaMatrixSerializableValidationError {
-    /// The value is outside the valid range `[0.0, 1.0]`.
-    #[error("The value must be within the range [0.0, 1.0]")]
+    /// The value is outside the valid range `]0.0, +inf[`.
+    #[error("The value must be within the range ]0.0, +inf[")]
     OutOfRange,
     /// The validate_realizability validation failed.
     #[error("{0}")]
@@ -628,8 +628,8 @@ impl Spacecraft {
 /// Error type for [`Spacecraft`] validation failures.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum SpacecraftValidationError {
-    /// The mass is outside the valid range `]0.0, f64::INFINITY[`.
-    #[error("The mass must be within the range ]0.0, f64::INFINITY[")]
+    /// The mass is outside the valid range `[0.0, f64::INFINITY[`.
+    #[error("The mass must be within the range [0.0, f64::INFINITY[")]
     MassOutOfRange,
     /// The bus_mass is outside the valid range `[0.0, 30_000.0[`.
     #[error("The bus_mass must be within the range [0.0, 30_000.0[")]
