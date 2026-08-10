@@ -5,6 +5,30 @@ use core::ops::{Bound, RangeBounds as _};
 use nalgebra::Matrix3;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+// TODO: the trait will live in the runtime crate and be re-exported next to the derive macro
+/// Marker trait for types constructible only from a validated draft.
+pub trait Validate: Sized {
+    /// Unvalidated draft mirror of the type.
+    type Draft;
+    /// Error produced when the draft is invalid.
+    type Error;
+
+    /// Validate the given `draft` with fail fast policy.
+    fn validate(draft: &Self::Draft) -> Result<(), Self::Error>;
+
+    /// Build the type from the given `draft` without validating it.
+    /// Only meant to be called by the generated code after a successful validation.
+    #[doc(hidden)]
+    fn from_draft_unchecked(draft: Self::Draft) -> Self;
+
+    /// Build the type from the given `draft`, validating it first.
+    /// Return the first error found during `draft` validation.
+    fn from_draft(draft: Self::Draft) -> Result<Self, Self::Error> {
+        Self::validate(&draft)?;
+        Ok(Self::from_draft_unchecked(draft))
+    }
+}
+
 /// List of supported celestial body kinds.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum CelestialBodyKind {
@@ -60,11 +84,26 @@ impl From<InertiaMatrix> for InertiaMatrixSerializable {
     }
 }
 
+// Hand-written bridge declaring the draft type and conversion path of the wrapper,
+// written once so the generated code never has to know them
+impl Validate for InertiaMatrix {
+    type Draft = InertiaMatrixSerializableDraft;
+    type Error = InertiaMatrixSerializableValidationError;
+
+    fn validate(draft: &Self::Draft) -> Result<(), Self::Error> {
+        draft.validate()
+    }
+
+    fn from_draft_unchecked(draft: Self::Draft) -> Self {
+        InertiaMatrixSerializable::from_draft_unchecked(draft).into()
+    }
+}
+
 /// Serde representation of a [`InertiaMatrix`].
 #[derive(Clone, Serialize, Deserialize)]
 // #[serde(try_from = "InertiaMatrixSerializableDraft")]
-// #[derive(Validate, Patchable)]
-// #[final_validation(validate_realizability)]
+// #[derive(Validate)]
+// #[final_validation(validate_realizability, error = InertiaMatrixRealizabilityValidationError)]
 pub struct InertiaMatrixSerializable {
     /// Ixx.
     // #[validate(range(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
@@ -533,19 +572,30 @@ impl TryFrom<InertiaMatrixSerializableDraft> for InertiaMatrixSerializable {
     type Error = InertiaMatrixSerializableValidationError;
 
     fn try_from(value: InertiaMatrixSerializableDraft) -> Result<Self, Self::Error> {
-        value.validate()?;
+        Self::from_draft(value)
+    }
+}
 
-        Ok(Self {
-            xx: value.xx,
-            xy: value.xy,
-            xz: value.xz,
-            yx: value.yx,
-            yy: value.yy,
-            yz: value.yz,
-            zx: value.zx,
-            zy: value.zy,
-            zz: value.zz,
-        })
+impl Validate for InertiaMatrixSerializable {
+    type Draft = InertiaMatrixSerializableDraft;
+    type Error = InertiaMatrixSerializableValidationError;
+
+    fn validate(draft: &Self::Draft) -> Result<(), Self::Error> {
+        draft.validate()
+    }
+
+    fn from_draft_unchecked(draft: Self::Draft) -> Self {
+        Self {
+            xx: draft.xx,
+            xy: draft.xy,
+            xz: draft.xz,
+            yx: draft.yx,
+            yy: draft.yy,
+            yz: draft.yz,
+            zx: draft.zx,
+            zy: draft.zy,
+            zz: draft.zz,
+        }
     }
 }
 
@@ -556,7 +606,7 @@ impl TryFrom<InertiaMatrixSerializableDraft> for InertiaMatrixSerializable {
 /// A value of 1.0 represents full sunlight and 0.0 represents full eclipse.
 #[repr(transparent)]
 #[derive(Clone, Serialize, Deserialize)]
-// #[derive(Validate, Patchable)]
+// #[derive(Validate)]
 #[serde(try_from = "ShadowFractionDraft")]
 pub struct ShadowFraction(
     // #[validate(range(0.0..=1.0))]
@@ -597,9 +647,7 @@ impl TryFrom<ShadowFractionDraft> for ShadowFraction {
     type Error = ShadowFractionValidationError;
 
     fn try_from(value: ShadowFractionDraft) -> Result<Self, Self::Error> {
-        value.validate()?;
-
-        Ok(Self(value.0))
+        Self::from_draft(value)
     }
 }
 
@@ -635,13 +683,26 @@ impl From<ShadowFraction> for ShadowFractionDraft {
     }
 }
 
+impl Validate for ShadowFraction {
+    type Draft = ShadowFractionDraft;
+    type Error = ShadowFractionValidationError;
+
+    fn validate(draft: &Self::Draft) -> Result<(), Self::Error> {
+        draft.validate()
+    }
+
+    fn from_draft_unchecked(draft: Self::Draft) -> Self {
+        Self(draft.0)
+    }
+}
+
 /* --------- WRITTEN ------------ */
 
 /// Reference physical properties of a spacecraft used during dynamical simulations.
 #[derive(Clone, Serialize, Deserialize)]
-// #[derive(Validate, Patchable)]
+// #[derive(Validate)]
 #[serde(try_from = "SpacecraftDraft")]
-// #[final_validation(validate_mass_sum)]
+// #[final_validation(validate_mass_sum, error = SpacecraftMassSumValidationError)]
 pub struct Spacecraft {
     /// Total spacecraft mass expressed in kilograms (kg).
     // #[validate(range(0.0..f64::INFINITY))]
@@ -710,10 +771,10 @@ pub enum SpacecraftValidationError {
     MassSumValidationError(SpacecraftMassSumValidationError),
     /// The inertia_matrix validation failed.
     #[error("{0}")]
-    InertiaMatrixSerializableValidationError(InertiaMatrixSerializableValidationError),
+    InertiaMatrixValidationError(<InertiaMatrix as Validate>::Error),
     /// The sun_shadow_fraction validation failed.
     #[error("{0}")]
-    ShadowFractionValidationError(ShadowFractionValidationError),
+    SunShadowFractionValidationError(<ShadowFraction as Validate>::Error),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -726,11 +787,11 @@ pub struct SpacecraftDraft {
     /// Mass of the spacecraft sail expressed in kilograms (kg).
     pub sail_mass: f64,
     /// Moment of inertia matrix expressed in the body frame (kg·m²).
-    pub inertia_matrix: InertiaMatrixSerializableDraft, //FIXME: how to detect this???
+    pub inertia_matrix: <InertiaMatrix as Validate>::Draft,
     /// Fraction of sunlight reaching the spacecraft.
-    pub sun_shadow_fraction: ShadowFractionDraft,
+    pub sun_shadow_fraction: <ShadowFraction as Validate>::Draft,
     /// Celestial body this spacecraft is primarily orbiting around.
-    pub primary_orbited_body: CelestialBodyKind, // won't get validated as doesn't contain #[validate] and doesn't impl Validate
+    pub primary_orbited_body: CelestialBodyKind, // #[validate(skip)] fields are passed through verbatim
 }
 
 impl SpacecraftDraft {
@@ -774,15 +835,15 @@ impl SpacecraftDraft {
 
     /// Validate the `inertia_matrix` field.
     pub fn validate_inertia_matrix(&self) -> Result<(), SpacecraftValidationError> {
-        InertiaMatrixSerializableDraft::validate(&self.inertia_matrix)
-            .map_err(SpacecraftValidationError::InertiaMatrixSerializableValidationError)?;
+        <InertiaMatrix as Validate>::validate(&self.inertia_matrix)
+            .map_err(SpacecraftValidationError::InertiaMatrixValidationError)?;
         Ok(())
     }
 
     /// Validate the `sun_shadow_fraction` field.
     pub fn validate_sun_shadow_fraction(&self) -> Result<(), SpacecraftValidationError> {
-        ShadowFractionDraft::validate(&self.sun_shadow_fraction)
-            .map_err(SpacecraftValidationError::ShadowFractionValidationError)?;
+        <ShadowFraction as Validate>::validate(&self.sun_shadow_fraction)
+            .map_err(SpacecraftValidationError::SunShadowFractionValidationError)?;
 
         Ok(())
     }
@@ -792,24 +853,7 @@ impl TryFrom<SpacecraftDraft> for Spacecraft {
     type Error = SpacecraftValidationError;
 
     fn try_from(value: SpacecraftDraft) -> Result<Self, Self::Error> {
-        value.validate()?;
-
-        let inertia_matrix_serializable: InertiaMatrixSerializable = value
-            .inertia_matrix
-            .try_into()
-            .map_err(SpacecraftValidationError::InertiaMatrixSerializableValidationError)?;
-
-        Ok(Self {
-            mass: value.mass,
-            bus_mass: value.bus_mass,
-            sail_mass: value.sail_mass,
-            inertia_matrix: inertia_matrix_serializable.into(),
-            sun_shadow_fraction: value
-                .sun_shadow_fraction
-                .try_into()
-                .map_err(SpacecraftValidationError::ShadowFractionValidationError)?,
-            primary_orbited_body: value.primary_orbited_body,
-        })
+        Self::from_draft(value)
     }
 }
 
@@ -965,6 +1009,26 @@ impl From<Spacecraft> for SpacecraftDraft {
             inertia_matrix: inertia_matrix_serializable.into(),
             sun_shadow_fraction: value.sun_shadow_fraction.into(),
             primary_orbited_body: value.primary_orbited_body,
+        }
+    }
+}
+
+impl Validate for Spacecraft {
+    type Draft = SpacecraftDraft;
+    type Error = SpacecraftValidationError;
+
+    fn validate(draft: &Self::Draft) -> Result<(), Self::Error> {
+        draft.validate()
+    }
+
+    fn from_draft_unchecked(draft: Self::Draft) -> Self {
+        Self {
+            mass: draft.mass,
+            bus_mass: draft.bus_mass,
+            sail_mass: draft.sail_mass,
+            inertia_matrix: InertiaMatrix::from_draft_unchecked(draft.inertia_matrix),
+            sun_shadow_fraction: ShadowFraction::from_draft_unchecked(draft.sun_shadow_fraction),
+            primary_orbited_body: draft.primary_orbited_body,
         }
     }
 }
