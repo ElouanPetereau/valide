@@ -174,7 +174,9 @@ impl InertiaMatrixSerializable {
         let determinant_ok = determinant >= -Self::REALIZABILITY_TOLERANCE;
 
         if !diagonal_ok || !minor_2_ok || !determinant_ok {
-            return Err(InertiaMatrixRealizabilityValidationError::CovarianceNotPositiveSemiDefinite);
+            return Err(
+                InertiaMatrixRealizabilityValidationError::CovarianceNotPositiveSemiDefinite,
+            );
         }
 
         Ok(())
@@ -233,9 +235,8 @@ impl InertiaMatrixSerializableDraft {
         self.validate_zy()?;
         self.validate_zz()?;
 
-        InertiaMatrixSerializable::validate_realizability(self).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        InertiaMatrixSerializable::validate_realizability(self)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         Ok(())
     }
@@ -399,9 +400,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.xx = new_xx;
         let _: () = tmp_draft.validate_xx()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.xx = new_xx;
 
@@ -415,9 +415,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.xy = new_xy;
         let _: () = tmp_draft.validate_xy()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.xy = new_xy;
 
@@ -431,9 +430,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.xz = new_xz;
         let _: () = tmp_draft.validate_xz()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.xz = new_xz;
 
@@ -447,9 +445,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.yx = new_yx;
         let _: () = tmp_draft.validate_yx()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.yx = new_yx;
 
@@ -463,9 +460,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.yy = new_yy;
         let _: () = tmp_draft.validate_yy()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.yy = new_yy;
 
@@ -479,9 +475,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.yz = new_yz;
         let _: () = tmp_draft.validate_yz()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.yz = new_yz;
 
@@ -495,9 +490,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.zx = new_zx;
         let _: () = tmp_draft.validate_zx()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.zx = new_zx;
 
@@ -511,9 +505,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.zy = new_zy;
         let _: () = tmp_draft.validate_zy()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.zy = new_zy;
 
@@ -527,9 +520,8 @@ impl InertiaMatrixSerializable {
         tmp_draft.zz = new_zz;
         let _: () = tmp_draft.validate_zz()?;
 
-        Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
-        )?;
+        Self::validate_realizability(&tmp_draft)
+            .map_err(InertiaMatrixSerializableValidationError::RealizabilityValidationError)?;
 
         self.zz = new_zz;
 
