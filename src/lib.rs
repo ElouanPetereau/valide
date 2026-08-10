@@ -751,9 +751,10 @@ pub struct Spacecraft {
 /// Error type for [`Spacecraft::validate_mass_sum`] validation failures.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum SpacecraftMassSumValidationError {
-    /// The spacecraft total mass is smaller than the sum of the bus and sail mass.
+    /// The spacecraft total mass is smaller than the sum of the bus and sail mass
+    /// by more than [`Spacecraft::MASS_SUM_TOLERANCE`].
     #[error(
-        "The spacecraft total mass must be greater or equal to the sum of the bus and sail mass"
+        "The spacecraft total mass must be greater or equal to the sum of the bus and sail mass within the mass sum tolerance"
     )]
     MassSmallerThanSum,
 }
@@ -763,12 +764,15 @@ pub enum SpacecraftMassSumValidationError {
     reason = "derives generate some part of the struct"
 )]
 impl Spacecraft {
-    /// Validation function to verify that the `mass` of the given `draft`
-    /// is greater than or equal to the sum of its `bus_mass` and `sail_mass`.
+    /// Absolute tolerance for the mass sum check, in kilograms (kg).
+    pub const MASS_SUM_TOLERANCE: f64 = 1e-9;
+
+    /// Validation function to verify that the `mass` of the given `draft` is greater than
+    /// or equal to the sum of its `bus_mass` and `sail_mass` within [`Self::MASS_SUM_TOLERANCE`].
     pub fn validate_mass_sum(
         draft: &SpacecraftDraft,
     ) -> Result<(), SpacecraftMassSumValidationError> {
-        if draft.mass < draft.bus_mass + draft.sail_mass {
+        if draft.mass < draft.bus_mass + draft.sail_mass - Self::MASS_SUM_TOLERANCE {
             return Err(SpacecraftMassSumValidationError::MassSmallerThanSum);
         }
 
