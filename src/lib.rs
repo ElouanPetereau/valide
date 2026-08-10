@@ -29,6 +29,12 @@ pub trait Validate: Sized {
     }
 }
 
+/// Marker trait for  types that can be patched field by field with validated setters.
+pub trait Patch: Validate {
+    /// Convert back to a draft for patching.
+    fn to_draft(&self) -> Self::Draft;
+}
+
 /// List of supported celestial body kinds.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum CelestialBodyKind {
@@ -99,10 +105,16 @@ impl Validate for InertiaMatrix {
     }
 }
 
+impl Patch for InertiaMatrix {
+    fn to_draft(&self) -> Self::Draft {
+        InertiaMatrixSerializable::from(self.clone()).into()
+    }
+}
+
 /// Serde representation of a [`InertiaMatrix`].
 #[derive(Clone, Serialize, Deserialize)]
 // #[serde(try_from = "InertiaMatrixSerializableDraft")]
-// #[derive(Validate)]
+// #[derive(Validate, Patch)]
 // #[final_validation(validate_realizability, error = InertiaMatrixRealizabilityValidationError)]
 pub struct InertiaMatrixSerializable {
     /// Ixx.
@@ -599,6 +611,12 @@ impl Validate for InertiaMatrixSerializable {
     }
 }
 
+impl Patch for InertiaMatrixSerializable {
+    fn to_draft(&self) -> Self::Draft {
+        self.clone().into()
+    }
+}
+
 /* --------- WRITTEN ------------ */
 
 /// Fraction of sunlight reaching a spacecraft, bounded to [0.0, 1.0].
@@ -606,7 +624,7 @@ impl Validate for InertiaMatrixSerializable {
 /// A value of 1.0 represents full sunlight and 0.0 represents full eclipse.
 #[repr(transparent)]
 #[derive(Clone, Serialize, Deserialize)]
-// #[derive(Validate)]
+// #[derive(Validate, Patch)]
 #[serde(try_from = "ShadowFractionDraft")]
 pub struct ShadowFraction(
     // #[validate(range(0.0..=1.0))]
@@ -696,11 +714,17 @@ impl Validate for ShadowFraction {
     }
 }
 
+impl Patch for ShadowFraction {
+    fn to_draft(&self) -> Self::Draft {
+        self.clone().into()
+    }
+}
+
 /* --------- WRITTEN ------------ */
 
 /// Reference physical properties of a spacecraft used during dynamical simulations.
 #[derive(Clone, Serialize, Deserialize)]
-// #[derive(Validate)]
+// #[derive(Validate, Patch)]
 #[serde(try_from = "SpacecraftDraft")]
 // #[final_validation(validate_mass_sum, error = SpacecraftMassSumValidationError)]
 pub struct Spacecraft {
@@ -948,10 +972,7 @@ impl Spacecraft {
         new_inertia_matrix: InertiaMatrix,
     ) -> Result<(), SpacecraftValidationError> {
         let mut tmp_draft: SpacecraftDraft = self.clone().into();
-        //FIXME: same detection problem as the draft field, the conversion path through InertiaMatrixSerializable is not knowable from tokens
-        let inertia_matrix_serializable: InertiaMatrixSerializable =
-            new_inertia_matrix.clone().into();
-        tmp_draft.inertia_matrix = inertia_matrix_serializable.into();
+        tmp_draft.inertia_matrix = new_inertia_matrix.to_draft();
         let _: () = tmp_draft.validate_inertia_matrix()?;
 
         Self::validate_mass_sum(&tmp_draft)
@@ -969,7 +990,7 @@ impl Spacecraft {
         new_sun_shadow_fraction: ShadowFraction,
     ) -> Result<(), SpacecraftValidationError> {
         let mut tmp_draft: SpacecraftDraft = self.clone().into();
-        tmp_draft.sun_shadow_fraction = new_sun_shadow_fraction.clone().into();
+        tmp_draft.sun_shadow_fraction = new_sun_shadow_fraction.to_draft();
         let _: () = tmp_draft.validate_sun_shadow_fraction()?;
 
         Self::validate_mass_sum(&tmp_draft)
@@ -1000,14 +1021,12 @@ impl Spacecraft {
 
 impl From<Spacecraft> for SpacecraftDraft {
     fn from(value: Spacecraft) -> Self {
-        let inertia_matrix_serializable: InertiaMatrixSerializable = value.inertia_matrix.into();
-
         Self {
             mass: value.mass,
             bus_mass: value.bus_mass,
             sail_mass: value.sail_mass,
-            inertia_matrix: inertia_matrix_serializable.into(),
-            sun_shadow_fraction: value.sun_shadow_fraction.into(),
+            inertia_matrix: value.inertia_matrix.to_draft(),
+            sun_shadow_fraction: value.sun_shadow_fraction.to_draft(),
             primary_orbited_body: value.primary_orbited_body,
         }
     }
@@ -1030,5 +1049,11 @@ impl Validate for Spacecraft {
             sun_shadow_fraction: ShadowFraction::from_draft_unchecked(draft.sun_shadow_fraction),
             primary_orbited_body: draft.primary_orbited_body,
         }
+    }
+}
+
+impl Patch for Spacecraft {
+    fn to_draft(&self) -> Self::Draft {
+        self.clone().into()
     }
 }
