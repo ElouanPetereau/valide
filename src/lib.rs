@@ -67,31 +67,37 @@ impl From<InertiaMatrix> for InertiaMatrixSerializable {
 // #[final_validation(validate_realizability)]
 pub struct InertiaMatrixSerializable {
     /// Ixx.
-    // #[validate(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
+    // #[validate(range(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
     xx: f64,
     /// Ixy.
+    // #[validate(finite)]
     xy: f64,
     /// Ixz.
+    // #[validate(finite)]
     xz: f64,
     /// Iyx.
+    // #[validate(finite)]
     yx: f64,
     /// Iyy.
-    // #[validate(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
+    // #[validate(range(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
     yy: f64,
     /// Iyz.
+    // #[validate(finite)]
     yz: f64,
     /// Izx.
+    // #[validate(finite)]
     zx: f64,
     /// Izy.
+    // #[validate(finite)]
     zy: f64,
     /// Izz.
-    // #[validate(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
+    // #[validate(range(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
     zz: f64,
 }
 
 /// Error type for [`InertiaMatrixSerializable::validate_realizability`] validation failures.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
-pub enum SpacecraftRealizabilityValidationError {
+pub enum InertiaMatrixRealizabilityValidationError {
     /// At least one off-diagonal pair differs by more than [`SYMMETRY_TOLERANCE`].
     #[error("The inertia matrix off-diagonal entries do not match within the symmetry tolerance")]
     NotSymmetric,
@@ -115,23 +121,25 @@ impl InertiaMatrixSerializable {
     /// Absolute tolerance for the physical realizability check, in the unit of the compared quantity.
     pub const REALIZABILITY_TOLERANCE: f64 = 1e-9;
 
-    /// Validation function to verify that the given spacecraft `mass`
-    /// is smaller than the sum of the given `bus_mass` and `sail_mass`.
+    /// Validation function to verify that the matrix of the given `draft` is symmetric
+    /// within [`Self::SYMMETRY_TOLERANCE`] and corresponds to a physically realizable
+    /// mass distribution within [`Self::REALIZABILITY_TOLERANCE`].
+    /// The entries are expected to be finite, which is enforced by the per field validations.
     pub fn validate_realizability(
         draft: &InertiaMatrixSerializableDraft,
-    ) -> Result<(), SpacecraftRealizabilityValidationError> {
+    ) -> Result<(), InertiaMatrixRealizabilityValidationError> {
         // Check symmetry
         if !((draft.xy - draft.yx).abs() <= Self::SYMMETRY_TOLERANCE
             && (draft.xz - draft.zx).abs() <= Self::SYMMETRY_TOLERANCE
             && (draft.yz - draft.zy).abs() <= Self::SYMMETRY_TOLERANCE)
         {
-            return Err(SpacecraftRealizabilityValidationError::NotSymmetric);
+            return Err(InertiaMatrixRealizabilityValidationError::NotSymmetric);
         }
 
         // Check realizability
         let half_trace = 0.5 * (draft.xx + draft.yy + draft.zz);
         if half_trace < -Self::REALIZABILITY_TOLERANCE {
-            return Err(SpacecraftRealizabilityValidationError::NegativeTrace);
+            return Err(InertiaMatrixRealizabilityValidationError::NegativeTrace);
         }
 
         // Mass covariance matrix: sigma = half_trace * identity - inertia. Symmetry
@@ -166,7 +174,7 @@ impl InertiaMatrixSerializable {
         let determinant_ok = determinant >= -Self::REALIZABILITY_TOLERANCE;
 
         if !diagonal_ok || !minor_2_ok || !determinant_ok {
-            return Err(SpacecraftRealizabilityValidationError::CovarianceNotPositiveSemiDefinite);
+            return Err(InertiaMatrixRealizabilityValidationError::CovarianceNotPositiveSemiDefinite);
         }
 
         Ok(())
@@ -181,9 +189,12 @@ pub enum InertiaMatrixSerializableValidationError {
     /// The value is outside the valid range `]0.0, +inf[`.
     #[error("The value must be within the range ]0.0, +inf[")]
     OutOfRange,
+    /// The value is not a finite number.
+    #[error("The value must be a finite number")]
+    NotFinite,
     /// The validate_realizability validation failed.
     #[error("{0}")]
-    SpacecraftRealizabilityValidationError(SpacecraftRealizabilityValidationError),
+    RealizabilityValidationError(InertiaMatrixRealizabilityValidationError),
 }
 
 /// Draft construction of a [`InertiaMatrixSerializable`].
@@ -213,11 +224,17 @@ impl InertiaMatrixSerializableDraft {
     /// Validate all the draft with fail fast policy where the first error found is directly returned.
     pub fn validate(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         self.validate_xx()?;
+        self.validate_xy()?;
+        self.validate_xz()?;
+        self.validate_yx()?;
         self.validate_yy()?;
+        self.validate_yz()?;
+        self.validate_zx()?;
+        self.validate_zy()?;
         self.validate_zz()?;
 
         InertiaMatrixSerializable::validate_realizability(self).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         Ok(())
@@ -232,10 +249,64 @@ impl InertiaMatrixSerializableDraft {
         Ok(())
     }
 
+    /// Validate the `xy` field.
+    pub fn validate_xy(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
+        if !self.xy.is_finite() {
+            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+        }
+
+        Ok(())
+    }
+
+    /// Validate the `xz` field.
+    pub fn validate_xz(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
+        if !self.xz.is_finite() {
+            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+        }
+
+        Ok(())
+    }
+
+    /// Validate the `yx` field.
+    pub fn validate_yx(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
+        if !self.yx.is_finite() {
+            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+        }
+
+        Ok(())
+    }
+
     /// Validate the `yy` field.
     pub fn validate_yy(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)).contains(&self.yy) {
             return Err(InertiaMatrixSerializableValidationError::OutOfRange);
+        }
+
+        Ok(())
+    }
+
+    /// Validate the `yz` field.
+    pub fn validate_yz(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
+        if !self.yz.is_finite() {
+            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+        }
+
+        Ok(())
+    }
+
+    /// Validate the `zx` field.
+    pub fn validate_zx(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
+        if !self.zx.is_finite() {
+            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+        }
+
+        Ok(())
+    }
+
+    /// Validate the `zy` field.
+    pub fn validate_zy(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
+        if !self.zy.is_finite() {
+            return Err(InertiaMatrixSerializableValidationError::NotFinite);
         }
 
         Ok(())
@@ -329,7 +400,7 @@ impl InertiaMatrixSerializable {
         let _: () = tmp_draft.validate_xx()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.xx = new_xx;
@@ -342,9 +413,10 @@ impl InertiaMatrixSerializable {
     pub fn set_xy(&mut self, new_xy: f64) -> Result<(), InertiaMatrixSerializableValidationError> {
         let mut tmp_draft: InertiaMatrixSerializableDraft = self.clone().into();
         tmp_draft.xy = new_xy;
+        let _: () = tmp_draft.validate_xy()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.xy = new_xy;
@@ -357,9 +429,10 @@ impl InertiaMatrixSerializable {
     pub fn set_xz(&mut self, new_xz: f64) -> Result<(), InertiaMatrixSerializableValidationError> {
         let mut tmp_draft: InertiaMatrixSerializableDraft = self.clone().into();
         tmp_draft.xz = new_xz;
+        let _: () = tmp_draft.validate_xz()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.xz = new_xz;
@@ -372,9 +445,10 @@ impl InertiaMatrixSerializable {
     pub fn set_yx(&mut self, new_yx: f64) -> Result<(), InertiaMatrixSerializableValidationError> {
         let mut tmp_draft: InertiaMatrixSerializableDraft = self.clone().into();
         tmp_draft.yx = new_yx;
+        let _: () = tmp_draft.validate_yx()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.yx = new_yx;
@@ -390,7 +464,7 @@ impl InertiaMatrixSerializable {
         let _: () = tmp_draft.validate_yy()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.yy = new_yy;
@@ -403,9 +477,10 @@ impl InertiaMatrixSerializable {
     pub fn set_yz(&mut self, new_yz: f64) -> Result<(), InertiaMatrixSerializableValidationError> {
         let mut tmp_draft: InertiaMatrixSerializableDraft = self.clone().into();
         tmp_draft.yz = new_yz;
+        let _: () = tmp_draft.validate_yz()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.yz = new_yz;
@@ -418,9 +493,10 @@ impl InertiaMatrixSerializable {
     pub fn set_zx(&mut self, new_zx: f64) -> Result<(), InertiaMatrixSerializableValidationError> {
         let mut tmp_draft: InertiaMatrixSerializableDraft = self.clone().into();
         tmp_draft.zx = new_zx;
+        let _: () = tmp_draft.validate_zx()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.zx = new_zx;
@@ -433,9 +509,10 @@ impl InertiaMatrixSerializable {
     pub fn set_zy(&mut self, new_zy: f64) -> Result<(), InertiaMatrixSerializableValidationError> {
         let mut tmp_draft: InertiaMatrixSerializableDraft = self.clone().into();
         tmp_draft.zy = new_zy;
+        let _: () = tmp_draft.validate_zy()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.zy = new_zy;
@@ -451,7 +528,7 @@ impl InertiaMatrixSerializable {
         let _: () = tmp_draft.validate_zz()?;
 
         Self::validate_realizability(&tmp_draft).map_err(
-            InertiaMatrixSerializableValidationError::SpacecraftRealizabilityValidationError,
+            InertiaMatrixSerializableValidationError::RealizabilityValidationError,
         )?;
 
         self.zz = new_zz;
