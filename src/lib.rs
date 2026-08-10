@@ -745,6 +745,7 @@ pub struct Spacecraft {
     sun_shadow_fraction: ShadowFraction,
     /// Celestial body this spacecraft is primarily orbiting around.
     // #[validate(skip)]
+    // a skip field must not be read by any final validation function
     primary_orbited_body: CelestialBodyKind,
 }
 
@@ -819,7 +820,8 @@ pub struct SpacecraftDraft {
     /// Fraction of sunlight reaching the spacecraft.
     pub sun_shadow_fraction: <ShadowFraction as Validate>::Draft,
     /// Celestial body this spacecraft is primarily orbiting around.
-    pub primary_orbited_body: CelestialBodyKind, // #[validate(skip)] fields are passed through verbatim
+    // #[validate(skip)] fields are passed through verbatim and are excluded from the final validation
+    pub primary_orbited_body: CelestialBodyKind,
 }
 
 impl SpacecraftDraft {
@@ -1005,21 +1007,11 @@ impl Spacecraft {
         Ok(())
     }
 
+    // #[validate(skip)] fields get an infallible setter with no validation at all,
+    // the skip contract guarantees the field takes part in no field or final validation.
     /// Set the given `new_primary_orbited_body`.
-    /// Return an error if the `new_primary_orbited_body` cannot be validated.
-    pub fn set_primary_orbited_body(
-        &mut self,
-        new_primary_orbited_body: CelestialBodyKind,
-    ) -> Result<(), SpacecraftValidationError> {
-        let mut tmp_draft: SpacecraftDraft = self.clone().into();
-        tmp_draft.primary_orbited_body = new_primary_orbited_body.clone();
-
-        Self::validate_mass_sum(&tmp_draft)
-            .map_err(SpacecraftValidationError::MassSumValidationError)?;
-
+    pub fn set_primary_orbited_body(&mut self, new_primary_orbited_body: CelestialBodyKind) {
         self.primary_orbited_body = new_primary_orbited_body;
-
-        Ok(())
     }
 }
 
@@ -2207,18 +2199,15 @@ mod tests {
         }
 
         #[test]
-        fn skip_field_setter_always_succeeds() {
+        fn skip_field_setter_is_infallible() {
             let mut spacecraft = Spacecraft::new(VALID_SPACECRAFT_DRAFT)
                 .expect("The valid spacecraft draft must build a spacecraft");
 
-            assert_eq!(
-                spacecraft.set_primary_orbited_body(CelestialBodyKind::Sun),
-                Ok(()),
-                "A skipped field update must always be accepted"
-            );
+            spacecraft.set_primary_orbited_body(CelestialBodyKind::Sun);
+
             assert!(
                 matches!(spacecraft.primary_orbited_body(), CelestialBodyKind::Sun),
-                "The skipped field must hold the new value"
+                "The skipped field setter must store the new value without any validation"
             );
         }
 
