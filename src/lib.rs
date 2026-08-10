@@ -661,14 +661,13 @@ pub struct Spacecraft {
     // #[validate(range(0.0..=10_000.0))]
     sail_mass: f64,
     /// Moment of inertia matrix expressed in the body frame (kg·m²).
-    // #[validate(
-    //     range(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)),
-    //     symmetric
-    // )]
+    // #[validate(nested)]
     inertia_matrix: InertiaMatrix,
     /// Fraction of sunlight reaching the spacecraft.
+    // #[validate(nested)]
     sun_shadow_fraction: ShadowFraction,
     /// Celestial body this spacecraft is primarily orbiting around.
+    // #[validate(skip)]
     primary_orbited_body: CelestialBodyKind,
 }
 
