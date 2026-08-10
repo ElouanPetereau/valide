@@ -490,7 +490,7 @@ impl TryFrom<InertiaMatrixSerializableDraft> for InertiaMatrixSerializable {
 // #[derive(Validate, Patchable)]
 #[serde(try_from = "ShadowFractionDraft")]
 pub struct ShadowFraction(
-    //#[validate(range(0.0..=1.0))]
+    // #[validate(range(0.0..=1.0))]
     f64,
 );
 
@@ -514,7 +514,7 @@ impl ShadowFractionDraft {
         self.validate_value()
     }
 
-    /// Validate the `inner` field.
+    /// Validate the `value` field.
     pub fn validate_value(&self) -> Result<(), ShadowFractionValidationError> {
         if !(0.0..=1.0).contains(&self.0) {
             return Err(ShadowFractionValidationError::OutOfRange);
@@ -542,7 +542,7 @@ impl ShadowFraction {
     }
 
     // Use `value` since this is a tuple struct, otherwise use the field name
-    /// Retrieve the `inner` field.
+    /// Retrieve the `value` field.
     pub fn value(&self) -> f64 {
         self.0
     }
@@ -610,8 +610,8 @@ pub enum SpacecraftMassSumValidationError {
     reason = "derives generate some part of the struct"
 )]
 impl Spacecraft {
-    /// Validation function to verify that the given spacecraft `mass`
-    /// is smaller than the sum of the given `bus_mass` and `sail_mass`.
+    /// Validation function to verify that the `mass` of the given `draft`
+    /// is greater than or equal to the sum of its `bus_mass` and `sail_mass`.
     pub fn validate_mass_sum(
         draft: &SpacecraftDraft,
     ) -> Result<(), SpacecraftMassSumValidationError> {
@@ -631,11 +631,11 @@ pub enum SpacecraftValidationError {
     /// The mass is outside the valid range `[0.0, f64::INFINITY[`.
     #[error("The mass must be within the range [0.0, f64::INFINITY[")]
     MassOutOfRange,
-    /// The bus_mass is outside the valid range `[0.0, 30_000.0[`.
-    #[error("The bus_mass must be within the range [0.0, 30_000.0[")]
+    /// The bus_mass is outside the valid range `[0.0, 30_000.0]`.
+    #[error("The bus_mass must be within the range [0.0, 30_000.0]")]
     BusMassOutOfRange,
-    /// The sail_mass is outside the valid range `[0.0, 10_000.0[`.
-    #[error("The sail_mass must be within the range [0.0, 10_000.0[")]
+    /// The sail_mass is outside the valid range `[0.0, 10_000.0]`.
+    #[error("The sail_mass must be within the range [0.0, 10_000.0]")]
     SailMassOutOfRange,
     /// The validate_mass_sum validation failed.
     #[error("{0}")]
@@ -649,7 +649,7 @@ pub enum SpacecraftValidationError {
 }
 
 #[derive(Serialize, Deserialize)]
-/// Draft construction  of a [`Spacecraft`].
+/// Draft construction of a [`Spacecraft`].
 pub struct SpacecraftDraft {
     /// Total spacecraft mass expressed in kilograms (kg).
     pub mass: f64,
@@ -662,7 +662,7 @@ pub struct SpacecraftDraft {
     /// Fraction of sunlight reaching the spacecraft.
     pub sun_shadow_fraction: ShadowFractionDraft,
     /// Celestial body this spacecraft is primarily orbiting around.
-    pub primary_orbited_body: CelestialBodyKind, // won;t get validated as doesn't contain #[validate] and doesn't impl Validate
+    pub primary_orbited_body: CelestialBodyKind, // won't get validated as doesn't contain #[validate] and doesn't impl Validate
 }
 
 impl SpacecraftDraft {
