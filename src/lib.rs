@@ -1,6 +1,9 @@
 //! A crate for validating types.
 
-use core::ops::{Bound, RangeBounds as _};
+use core::{
+    fmt,
+    ops::{Bound, RangeBounds as _},
+};
 
 use nalgebra::Matrix3;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -236,15 +239,65 @@ impl InertiaMatrixSerializable {
 
 /* --------- GENERATED ------------ */
 
+// One field enum is generated per type with a variant per range or finite validated field,
+// the shared OutOfRange and NotFinite variants carry it to name the failing field
+/// Validated fields of a [`InertiaMatrixSerializable`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InertiaMatrixSerializableField {
+    /// The `xx` field.
+    Xx,
+    /// The `xy` field.
+    Xy,
+    /// The `xz` field.
+    Xz,
+    /// The `yx` field.
+    Yx,
+    /// The `yy` field.
+    Yy,
+    /// The `yz` field.
+    Yz,
+    /// The `zx` field.
+    Zx,
+    /// The `zy` field.
+    Zy,
+    /// The `zz` field.
+    Zz,
+}
+
+impl fmt::Display for InertiaMatrixSerializableField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Xx => "xx",
+            Self::Xy => "xy",
+            Self::Xz => "xz",
+            Self::Yx => "yx",
+            Self::Yy => "yy",
+            Self::Yz => "yz",
+            Self::Zx => "zx",
+            Self::Zy => "zy",
+            Self::Zz => "zz",
+        })
+    }
+}
+
 /// Error type for [`InertiaMatrixSerializable`] validation failures.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum InertiaMatrixSerializableValidationError {
-    /// The value is outside the valid range `]0.0, +inf[`.
-    #[error("The value must be within the range ]0.0, +inf[")]
-    OutOfRange,
-    /// The value is not a finite number.
-    #[error("The value must be a finite number")]
-    NotFinite,
+    // TODO: find a fix for the `variant-size-differences`lint
+    /// The field value is outside its valid range.
+    #[error("The {field} must be within the range {range}")]
+    OutOfRange {
+        /// The field that failed the validation.
+        field: InertiaMatrixSerializableField,
+        /// The valid range of the field.
+        range: &'static str,
+    },
+    /// The field value is not a finite number.
+    #[error("The {field} must be a finite number")]
+    NotFinite {
+        /// The field that failed the validation.
+        field: InertiaMatrixSerializableField,
+    },
     /// The validate_realizability validation failed.
     #[error("{0}")]
     RealizabilityValidationError(InertiaMatrixRealizabilityValidationError),
@@ -295,7 +348,10 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `xx` field.
     pub fn validate_xx(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)).contains(&self.xx) {
-            return Err(InertiaMatrixSerializableValidationError::OutOfRange);
+            return Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                field: InertiaMatrixSerializableField::Xx,
+                range: "]0.0, +inf[",
+            });
         }
 
         Ok(())
@@ -304,7 +360,9 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `xy` field.
     pub fn validate_xy(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !self.xy.is_finite() {
-            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+            return Err(InertiaMatrixSerializableValidationError::NotFinite {
+                field: InertiaMatrixSerializableField::Xy,
+            });
         }
 
         Ok(())
@@ -313,7 +371,9 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `xz` field.
     pub fn validate_xz(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !self.xz.is_finite() {
-            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+            return Err(InertiaMatrixSerializableValidationError::NotFinite {
+                field: InertiaMatrixSerializableField::Xz,
+            });
         }
 
         Ok(())
@@ -322,7 +382,9 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `yx` field.
     pub fn validate_yx(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !self.yx.is_finite() {
-            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+            return Err(InertiaMatrixSerializableValidationError::NotFinite {
+                field: InertiaMatrixSerializableField::Yx,
+            });
         }
 
         Ok(())
@@ -331,7 +393,10 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `yy` field.
     pub fn validate_yy(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)).contains(&self.yy) {
-            return Err(InertiaMatrixSerializableValidationError::OutOfRange);
+            return Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                field: InertiaMatrixSerializableField::Yy,
+                range: "]0.0, +inf[",
+            });
         }
 
         Ok(())
@@ -340,7 +405,9 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `yz` field.
     pub fn validate_yz(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !self.yz.is_finite() {
-            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+            return Err(InertiaMatrixSerializableValidationError::NotFinite {
+                field: InertiaMatrixSerializableField::Yz,
+            });
         }
 
         Ok(())
@@ -349,7 +416,9 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `zx` field.
     pub fn validate_zx(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !self.zx.is_finite() {
-            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+            return Err(InertiaMatrixSerializableValidationError::NotFinite {
+                field: InertiaMatrixSerializableField::Zx,
+            });
         }
 
         Ok(())
@@ -358,7 +427,9 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `zy` field.
     pub fn validate_zy(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !self.zy.is_finite() {
-            return Err(InertiaMatrixSerializableValidationError::NotFinite);
+            return Err(InertiaMatrixSerializableValidationError::NotFinite {
+                field: InertiaMatrixSerializableField::Zy,
+            });
         }
 
         Ok(())
@@ -367,7 +438,10 @@ impl InertiaMatrixSerializableDraft {
     /// Validate the `zz` field.
     pub fn validate_zz(&self) -> Result<(), InertiaMatrixSerializableValidationError> {
         if !(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)).contains(&self.zz) {
-            return Err(InertiaMatrixSerializableValidationError::OutOfRange);
+            return Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                field: InertiaMatrixSerializableField::Zz,
+                range: "]0.0, +inf[",
+            });
         }
 
         Ok(())
@@ -633,12 +707,33 @@ pub struct ShadowFraction(
 
 /* --------- GENERATED ------------ */
 
+/// Validated fields of a [`ShadowFraction`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShadowFractionField {
+    // Use `Value` since this is a tuple struct, otherwise use the field name
+    /// The `value` field.
+    Value,
+}
+
+impl fmt::Display for ShadowFractionField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Value => "value",
+        })
+    }
+}
+
 /// Error type for [`ShadowFraction`] validation failures.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum ShadowFractionValidationError {
-    /// The value is outside the valid range `[0.0, 1.0]`.
-    #[error("The value must be within the range [0.0, 1.0]")]
-    OutOfRange,
+    /// The field value is outside its valid range.
+    #[error("The {field} must be within the range {range}")]
+    OutOfRange {
+        /// The field that failed the validation.
+        field: ShadowFractionField,
+        /// The valid range of the field.
+        range: &'static str,
+    },
 }
 
 /// Draft construction of a [`ShadowFraction`].
@@ -654,7 +749,10 @@ impl ShadowFractionDraft {
     /// Validate the `value` field.
     pub fn validate_value(&self) -> Result<(), ShadowFractionValidationError> {
         if !(0.0..=1.0).contains(&self.0) {
-            return Err(ShadowFractionValidationError::OutOfRange);
+            return Err(ShadowFractionValidationError::OutOfRange {
+                field: ShadowFractionField::Value,
+                range: "[0.0, 1.0]",
+            });
         }
 
         Ok(())
@@ -783,18 +881,38 @@ impl Spacecraft {
 
 /* --------- GENERATED ------------ */
 
+/// Validated fields of a [`Spacecraft`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpacecraftField {
+    /// The `mass` field.
+    Mass,
+    /// The `bus_mass` field.
+    BusMass,
+    /// The `sail_mass` field.
+    SailMass,
+}
+
+impl fmt::Display for SpacecraftField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Mass => "mass",
+            Self::BusMass => "bus_mass",
+            Self::SailMass => "sail_mass",
+        })
+    }
+}
+
 /// Error type for [`Spacecraft`] validation failures.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum SpacecraftValidationError {
-    /// The mass is outside the valid range `[0.0, f64::INFINITY[`.
-    #[error("The mass must be within the range [0.0, f64::INFINITY[")]
-    MassOutOfRange,
-    /// The bus_mass is outside the valid range `[0.0, 30_000.0]`.
-    #[error("The bus_mass must be within the range [0.0, 30_000.0]")]
-    BusMassOutOfRange,
-    /// The sail_mass is outside the valid range `[0.0, 10_000.0]`.
-    #[error("The sail_mass must be within the range [0.0, 10_000.0]")]
-    SailMassOutOfRange,
+    /// The field value is outside its valid range.
+    #[error("The {field} must be within the range {range}")]
+    OutOfRange {
+        /// The field that failed the validation.
+        field: SpacecraftField,
+        /// The valid range of the field.
+        range: &'static str,
+    },
     /// The validate_mass_sum validation failed.
     #[error("{0}")]
     MassSumValidationError(SpacecraftMassSumValidationError),
@@ -842,7 +960,10 @@ impl SpacecraftDraft {
     /// Validate the `mass` field.
     pub fn validate_mass(&self) -> Result<(), SpacecraftValidationError> {
         if !(0.0..f64::INFINITY).contains(&self.mass) {
-            return Err(SpacecraftValidationError::MassOutOfRange);
+            return Err(SpacecraftValidationError::OutOfRange {
+                field: SpacecraftField::Mass,
+                range: "[0.0, f64::INFINITY[",
+            });
         }
         Ok(())
     }
@@ -850,7 +971,10 @@ impl SpacecraftDraft {
     /// Validate the `bus_mass` field.
     pub fn validate_bus_mass(&self) -> Result<(), SpacecraftValidationError> {
         if !(0.0..=30_000.0).contains(&self.bus_mass) {
-            return Err(SpacecraftValidationError::BusMassOutOfRange);
+            return Err(SpacecraftValidationError::OutOfRange {
+                field: SpacecraftField::BusMass,
+                range: "[0.0, 30_000.0]",
+            });
         }
         Ok(())
     }
@@ -858,7 +982,10 @@ impl SpacecraftDraft {
     /// Validate the `sail_mass` field.
     pub fn validate_sail_mass(&self) -> Result<(), SpacecraftValidationError> {
         if !(0.0..=10_000.0).contains(&self.sail_mass) {
-            return Err(SpacecraftValidationError::SailMassOutOfRange);
+            return Err(SpacecraftValidationError::OutOfRange {
+                field: SpacecraftField::SailMass,
+                range: "[0.0, 10_000.0]",
+            });
         }
         Ok(())
     }
@@ -1059,7 +1186,7 @@ impl Patch for Spacecraft {
 #[cfg(test)]
 mod tests {
     use crate::{
-        CelestialBodyKind, InertiaMatrixSerializableDraft,
+        CelestialBodyKind, InertiaMatrixSerializableDraft, InertiaMatrixSerializableField,
         InertiaMatrixSerializableValidationError, ShadowFractionDraft, SpacecraftDraft,
     };
 
@@ -1077,16 +1204,19 @@ mod tests {
             "xx",
             |draft, value| draft.xx = value,
             InertiaMatrixSerializableDraft::validate_xx,
+            InertiaMatrixSerializableField::Xx,
         ),
         (
             "yy",
             |draft, value| draft.yy = value,
             InertiaMatrixSerializableDraft::validate_yy,
+            InertiaMatrixSerializableField::Yy,
         ),
         (
             "zz",
             |draft, value| draft.zz = value,
             InertiaMatrixSerializableDraft::validate_zz,
+            InertiaMatrixSerializableField::Zz,
         ),
     ];
 
@@ -1096,40 +1226,47 @@ mod tests {
             "xy",
             |draft, value| draft.xy = value,
             InertiaMatrixSerializableDraft::validate_xy,
+            InertiaMatrixSerializableField::Xy,
         ),
         (
             "xz",
             |draft, value| draft.xz = value,
             InertiaMatrixSerializableDraft::validate_xz,
+            InertiaMatrixSerializableField::Xz,
         ),
         (
             "yx",
             |draft, value| draft.yx = value,
             InertiaMatrixSerializableDraft::validate_yx,
+            InertiaMatrixSerializableField::Yx,
         ),
         (
             "yz",
             |draft, value| draft.yz = value,
             InertiaMatrixSerializableDraft::validate_yz,
+            InertiaMatrixSerializableField::Yz,
         ),
         (
             "zx",
             |draft, value| draft.zx = value,
             InertiaMatrixSerializableDraft::validate_zx,
+            InertiaMatrixSerializableField::Zx,
         ),
         (
             "zy",
             |draft, value| draft.zy = value,
             InertiaMatrixSerializableDraft::validate_zy,
+            InertiaMatrixSerializableField::Zy,
         ),
     ];
 
-    /// Name, setter and matching per field validator of one inertia draft field.
+    /// Name, setter, validator and field enum variant of one inertia draft field.
     /// Used to exercise every field validator individually.
     type InertiaFieldCase = (
         &'static str,
         fn(&mut InertiaMatrixSerializableDraft, f64),
         fn(&InertiaMatrixSerializableDraft) -> Result<(), InertiaMatrixSerializableValidationError>,
+        InertiaMatrixSerializableField,
     );
 
     /// Build an inertia draft with the given `xx`, `yy` and `zz` diagonal and zero off-diagonals.
@@ -1191,7 +1328,7 @@ mod tests {
     mod field_validation {
         /// Bounds of the shadow fraction value.
         mod shadow_fraction {
-            use crate::{ShadowFractionDraft, ShadowFractionValidationError};
+            use crate::{ShadowFractionDraft, ShadowFractionField, ShadowFractionValidationError};
 
             #[test]
             fn accepts_lower_bound() {
@@ -1233,7 +1370,10 @@ mod tests {
             fn rejects_below_lower_bound() {
                 assert_eq!(
                     ShadowFractionDraft(-0.1).validate_value(),
-                    Err(ShadowFractionValidationError::OutOfRange),
+                    Err(ShadowFractionValidationError::OutOfRange {
+                        field: ShadowFractionField::Value,
+                        range: "[0.0, 1.0]",
+                    }),
                     "A value below the lower bound must be rejected"
                 );
             }
@@ -1243,7 +1383,10 @@ mod tests {
                 for rejected_value in [1.000_001, 1.0 + f64::EPSILON] {
                     assert_eq!(
                         ShadowFractionDraft(rejected_value).validate_value(),
-                        Err(ShadowFractionValidationError::OutOfRange),
+                        Err(ShadowFractionValidationError::OutOfRange {
+                            field: ShadowFractionField::Value,
+                            range: "[0.0, 1.0]",
+                        }),
                         "The value {rejected_value} above the upper bound must be rejected"
                     );
                 }
@@ -1253,7 +1396,10 @@ mod tests {
             fn rejects_nan() {
                 assert_eq!(
                     ShadowFractionDraft(f64::NAN).validate_value(),
-                    Err(ShadowFractionValidationError::OutOfRange),
+                    Err(ShadowFractionValidationError::OutOfRange {
+                        field: ShadowFractionField::Value,
+                        range: "[0.0, 1.0]",
+                    }),
                     "A not a number value must be rejected"
                 );
             }
@@ -1262,7 +1408,10 @@ mod tests {
             fn rejects_positive_infinity() {
                 assert_eq!(
                     ShadowFractionDraft(f64::INFINITY).validate_value(),
-                    Err(ShadowFractionValidationError::OutOfRange),
+                    Err(ShadowFractionValidationError::OutOfRange {
+                        field: ShadowFractionField::Value,
+                        range: "[0.0, 1.0]",
+                    }),
                     "The positive infinity must be rejected"
                 );
             }
@@ -1275,10 +1424,15 @@ mod tests {
 
             #[test]
             fn rejects_zero() {
-                for (field_name, set_field, validate_field) in DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, expected_field) in
+                    DIAGONAL_INERTIA_FIELD_CASES
+                {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, 0.0),
-                        Err(InertiaMatrixSerializableValidationError::OutOfRange),
+                        Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                            field: expected_field,
+                            range: "]0.0, +inf[",
+                        }),
                         "The excluded lower bound 0.0 must be rejected for the {field_name} field"
                     );
                 }
@@ -1286,7 +1440,7 @@ mod tests {
 
             #[test]
             fn accepts_smallest_positive() {
-                for (field_name, set_field, validate_field) in DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, ..) in DIAGONAL_INERTIA_FIELD_CASES {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, f64::MIN_POSITIVE),
                         Ok(()),
@@ -1297,7 +1451,7 @@ mod tests {
 
             #[test]
             fn accepts_max_finite() {
-                for (field_name, set_field, validate_field) in DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, ..) in DIAGONAL_INERTIA_FIELD_CASES {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, f64::MAX),
                         Ok(()),
@@ -1308,10 +1462,15 @@ mod tests {
 
             #[test]
             fn rejects_negative() {
-                for (field_name, set_field, validate_field) in DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, expected_field) in
+                    DIAGONAL_INERTIA_FIELD_CASES
+                {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, -1.0),
-                        Err(InertiaMatrixSerializableValidationError::OutOfRange),
+                        Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                            field: expected_field,
+                            range: "]0.0, +inf[",
+                        }),
                         "A negative value must be rejected for the {field_name} field"
                     );
                 }
@@ -1319,10 +1478,15 @@ mod tests {
 
             #[test]
             fn rejects_positive_infinity() {
-                for (field_name, set_field, validate_field) in DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, expected_field) in
+                    DIAGONAL_INERTIA_FIELD_CASES
+                {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, f64::INFINITY),
-                        Err(InertiaMatrixSerializableValidationError::OutOfRange),
+                        Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                            field: expected_field,
+                            range: "]0.0, +inf[",
+                        }),
                         "The excluded positive infinity must be rejected for the {field_name} field"
                     );
                 }
@@ -1330,10 +1494,15 @@ mod tests {
 
             #[test]
             fn rejects_nan() {
-                for (field_name, set_field, validate_field) in DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, expected_field) in
+                    DIAGONAL_INERTIA_FIELD_CASES
+                {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, f64::NAN),
-                        Err(InertiaMatrixSerializableValidationError::OutOfRange),
+                        Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                            field: expected_field,
+                            range: "]0.0, +inf[",
+                        }),
                         "A not a number value must be rejected for the {field_name} field"
                     );
                 }
@@ -1347,7 +1516,8 @@ mod tests {
 
             #[test]
             fn accepts_zero_negative_and_large_finite() {
-                for (field_name, set_field, validate_field) in OFF_DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, ..) in OFF_DIAGONAL_INERTIA_FIELD_CASES
+                {
                     for accepted_value in [0.0, -5.0, f64::MAX] {
                         assert_eq!(
                             validate_inertia_field(set_field, validate_field, accepted_value),
@@ -1360,10 +1530,14 @@ mod tests {
 
             #[test]
             fn rejects_nan() {
-                for (field_name, set_field, validate_field) in OFF_DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, expected_field) in
+                    OFF_DIAGONAL_INERTIA_FIELD_CASES
+                {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, f64::NAN),
-                        Err(InertiaMatrixSerializableValidationError::NotFinite),
+                        Err(InertiaMatrixSerializableValidationError::NotFinite {
+                            field: expected_field,
+                        }),
                         "A not a number value must be rejected for the {field_name} field"
                     );
                 }
@@ -1371,10 +1545,14 @@ mod tests {
 
             #[test]
             fn rejects_positive_infinity() {
-                for (field_name, set_field, validate_field) in OFF_DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, expected_field) in
+                    OFF_DIAGONAL_INERTIA_FIELD_CASES
+                {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, f64::INFINITY),
-                        Err(InertiaMatrixSerializableValidationError::NotFinite),
+                        Err(InertiaMatrixSerializableValidationError::NotFinite {
+                            field: expected_field,
+                        }),
                         "The positive infinity must be rejected for the {field_name} field"
                     );
                 }
@@ -1382,10 +1560,14 @@ mod tests {
 
             #[test]
             fn rejects_negative_infinity() {
-                for (field_name, set_field, validate_field) in OFF_DIAGONAL_INERTIA_FIELD_CASES {
+                for (field_name, set_field, validate_field, expected_field) in
+                    OFF_DIAGONAL_INERTIA_FIELD_CASES
+                {
                     assert_eq!(
                         validate_inertia_field(set_field, validate_field, f64::NEG_INFINITY),
-                        Err(InertiaMatrixSerializableValidationError::NotFinite),
+                        Err(InertiaMatrixSerializableValidationError::NotFinite {
+                            field: expected_field,
+                        }),
                         "The negative infinity must be rejected for the {field_name} field"
                     );
                 }
@@ -1398,8 +1580,9 @@ mod tests {
                 VALID_SPACECRAFT_DRAFT, diagonal_inertia_draft, spacecraft_draft_with_masses,
             };
             use crate::{
-                InertiaMatrixSerializableValidationError, ShadowFractionDraft,
-                ShadowFractionValidationError, SpacecraftDraft, SpacecraftValidationError,
+                InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
+                ShadowFractionDraft, ShadowFractionField, ShadowFractionValidationError,
+                SpacecraftDraft, SpacecraftField, SpacecraftValidationError,
             };
 
             #[test]
@@ -1415,7 +1598,10 @@ mod tests {
             fn mass_rejects_negative() {
                 assert_eq!(
                     spacecraft_draft_with_masses(-1.0, 600.0, 300.0).validate_mass(),
-                    Err(SpacecraftValidationError::MassOutOfRange),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::Mass,
+                        range: "[0.0, f64::INFINITY[",
+                    }),
                     "A negative total mass must be rejected"
                 );
             }
@@ -1424,7 +1610,10 @@ mod tests {
             fn mass_rejects_positive_infinity() {
                 assert_eq!(
                     spacecraft_draft_with_masses(f64::INFINITY, 600.0, 300.0).validate_mass(),
-                    Err(SpacecraftValidationError::MassOutOfRange),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::Mass,
+                        range: "[0.0, f64::INFINITY[",
+                    }),
                     "The excluded positive infinity must be rejected as a total mass"
                 );
             }
@@ -1433,7 +1622,10 @@ mod tests {
             fn mass_rejects_nan() {
                 assert_eq!(
                     spacecraft_draft_with_masses(f64::NAN, 600.0, 300.0).validate_mass(),
-                    Err(SpacecraftValidationError::MassOutOfRange),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::Mass,
+                        range: "[0.0, f64::INFINITY[",
+                    }),
                     "A not a number total mass must be rejected"
                 );
             }
@@ -1451,7 +1643,10 @@ mod tests {
             fn bus_mass_rejects_above_upper_bound() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, 30_000.1, 300.0).validate_bus_mass(),
-                    Err(SpacecraftValidationError::BusMassOutOfRange),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::BusMass,
+                        range: "[0.0, 30_000.0]",
+                    }),
                     "A bus mass above the upper bound must be rejected"
                 );
             }
@@ -1460,7 +1655,10 @@ mod tests {
             fn bus_mass_rejects_negative() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, -1.0, 300.0).validate_bus_mass(),
-                    Err(SpacecraftValidationError::BusMassOutOfRange),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::BusMass,
+                        range: "[0.0, 30_000.0]",
+                    }),
                     "A negative bus mass must be rejected"
                 );
             }
@@ -1478,7 +1676,10 @@ mod tests {
             fn sail_mass_rejects_above_upper_bound() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, 600.0, 10_000.1).validate_sail_mass(),
-                    Err(SpacecraftValidationError::SailMassOutOfRange),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::SailMass,
+                        range: "[0.0, 10_000.0]",
+                    }),
                     "A sail mass above the upper bound must be rejected"
                 );
             }
@@ -1487,7 +1688,10 @@ mod tests {
             fn sail_mass_rejects_negative() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, 600.0, -1.0).validate_sail_mass(),
-                    Err(SpacecraftValidationError::SailMassOutOfRange),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::SailMass,
+                        range: "[0.0, 10_000.0]",
+                    }),
                     "A negative sail mass must be rejected"
                 );
             }
@@ -1502,7 +1706,10 @@ mod tests {
                 assert_eq!(
                     draft.validate_inertia_matrix(),
                     Err(SpacecraftValidationError::InertiaMatrixValidationError(
-                        InertiaMatrixSerializableValidationError::OutOfRange
+                        InertiaMatrixSerializableValidationError::OutOfRange {
+                            field: InertiaMatrixSerializableField::Xx,
+                            range: "]0.0, +inf[",
+                        }
                     )),
                     "The nested inertia matrix error must be wrapped by the spacecraft error"
                 );
@@ -1518,7 +1725,10 @@ mod tests {
                 assert_eq!(
                     draft.validate_sun_shadow_fraction(),
                     Err(SpacecraftValidationError::SunShadowFractionValidationError(
-                        ShadowFractionValidationError::OutOfRange
+                        ShadowFractionValidationError::OutOfRange {
+                            field: ShadowFractionField::Value,
+                            range: "[0.0, 1.0]",
+                        }
                     )),
                     "The nested shadow fraction error must be wrapped by the spacecraft error"
                 );
@@ -1531,8 +1741,8 @@ mod tests {
                 VALID_INERTIA_DRAFT, VALID_SPACECRAFT_DRAFT, diagonal_inertia_draft,
             };
             use crate::{
-                InertiaMatrixSerializableValidationError, SpacecraftDraft,
-                SpacecraftValidationError,
+                InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
+                SpacecraftDraft, SpacecraftField, SpacecraftValidationError,
             };
 
             #[test]
@@ -1543,7 +1753,10 @@ mod tests {
 
                 assert_eq!(
                     draft.validate(),
-                    Err(InertiaMatrixSerializableValidationError::OutOfRange),
+                    Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                        field: InertiaMatrixSerializableField::Xx,
+                        range: "]0.0, +inf[",
+                    }),
                     "The xx field is declared first so its error must be reported"
                 );
             }
@@ -1557,7 +1770,9 @@ mod tests {
 
                 assert_eq!(
                     draft.validate(),
-                    Err(InertiaMatrixSerializableValidationError::NotFinite),
+                    Err(InertiaMatrixSerializableValidationError::NotFinite {
+                        field: InertiaMatrixSerializableField::Xy,
+                    }),
                     "The field validators must run before the realizability validation"
                 );
             }
@@ -1572,7 +1787,10 @@ mod tests {
 
                 assert_eq!(
                     draft.validate(),
-                    Err(SpacecraftValidationError::MassOutOfRange),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::Mass,
+                        range: "[0.0, f64::INFINITY[",
+                    }),
                     "The mass field is declared first so its error must be reported"
                 );
             }
@@ -1805,8 +2023,9 @@ mod tests {
             spacecraft_draft_with_masses,
         };
         use crate::{
-            CelestialBodyKind, InertiaMatrixSerializable, InertiaMatrixSerializableValidationError,
-            ShadowFraction, ShadowFractionDraft, ShadowFractionValidationError, Spacecraft,
+            CelestialBodyKind, InertiaMatrixSerializable, InertiaMatrixSerializableField,
+            InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
+            ShadowFractionField, ShadowFractionValidationError, Spacecraft,
             SpacecraftMassSumValidationError, SpacecraftValidationError, Validate as _,
         };
 
@@ -1834,7 +2053,10 @@ mod tests {
 
             assert_eq!(
                 InertiaMatrixSerializable::new(draft).err(),
-                Some(InertiaMatrixSerializableValidationError::OutOfRange),
+                Some(InertiaMatrixSerializableValidationError::OutOfRange {
+                    field: InertiaMatrixSerializableField::Xx,
+                    range: "]0.0, +inf[",
+                }),
                 "The construction must report the first field error found"
             );
         }
@@ -1851,7 +2073,10 @@ mod tests {
         fn shadow_new_invalid() {
             assert_eq!(
                 ShadowFraction::new(ShadowFractionDraft(1.5)).err(),
-                Some(ShadowFractionValidationError::OutOfRange),
+                Some(ShadowFractionValidationError::OutOfRange {
+                    field: ShadowFractionField::Value,
+                    range: "[0.0, 1.0]",
+                }),
                 "A shadow fraction above the upper bound must not build"
             );
         }
@@ -2011,8 +2236,9 @@ mod tests {
         };
         use crate::{
             CelestialBodyKind, InertiaMatrix, InertiaMatrixRealizabilityValidationError,
-            InertiaMatrixSerializable, InertiaMatrixSerializableValidationError, Patch as _,
-            ShadowFraction, ShadowFractionDraft, ShadowFractionValidationError, Spacecraft,
+            InertiaMatrixSerializable, InertiaMatrixSerializableField,
+            InertiaMatrixSerializableValidationError, Patch as _, ShadowFraction,
+            ShadowFractionDraft, ShadowFractionField, ShadowFractionValidationError, Spacecraft,
             SpacecraftMassSumValidationError, SpacecraftValidationError, Validate as _,
         };
 
@@ -2036,7 +2262,10 @@ mod tests {
 
             assert_eq!(
                 matrix.set_xx(0.0),
-                Err(InertiaMatrixSerializableValidationError::OutOfRange),
+                Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                    field: InertiaMatrixSerializableField::Xx,
+                    range: "]0.0, +inf[",
+                }),
                 "An xx update to the excluded lower bound must be rejected"
             );
 
@@ -2089,7 +2318,10 @@ mod tests {
 
             assert_eq!(
                 fraction.set_value(2.0),
-                Err(ShadowFractionValidationError::OutOfRange),
+                Err(ShadowFractionValidationError::OutOfRange {
+                    field: ShadowFractionField::Value,
+                    range: "[0.0, 1.0]",
+                }),
                 "A shadow fraction update above the upper bound must be rejected"
             );
             assert_float_eq(fraction.value(), 0.5, "value after the rejection");
