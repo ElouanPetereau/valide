@@ -307,23 +307,23 @@ pub enum InertiaMatrixSerializableValidationError {
 #[derive(Serialize, Deserialize)]
 pub struct InertiaMatrixSerializableDraft {
     /// Ixx.
-    xx: f64,
+    pub xx: f64,
     /// Ixy.
-    xy: f64,
+    pub xy: f64,
     /// Ixz.
-    xz: f64,
+    pub xz: f64,
     /// Iyx.
-    yx: f64,
+    pub yx: f64,
     /// Iyy.
-    yy: f64,
+    pub yy: f64,
     /// Iyz.
-    yz: f64,
+    pub yz: f64,
     /// Izx.
-    zx: f64,
+    pub zx: f64,
     /// Izy.
-    zy: f64,
+    pub zy: f64,
     /// Izz.
-    zz: f64,
+    pub zz: f64,
 }
 
 impl InertiaMatrixSerializableDraft {
