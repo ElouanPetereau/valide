@@ -20,7 +20,14 @@ thiserror = { version = "2.0.16", default-features = false }
 serde_json = "1.0"
 
 [features]
-default = ["std"]
+default = ["math-native", "std"]
+# Use the portable math implementation.
+math-libm = [
+  "nalgebra/libm",
+  "nalgebra/libm-force",
+]
+# Use the platform native math implementation.
+math-native = ["nalgebra/std"]
 std = ["dep:serde", "nalgebra/serde-serialize"]
 
 [lints.clippy]

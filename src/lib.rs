@@ -1,11 +1,23 @@
 //! A crate for validating types.
 
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
+
+#[cfg(all(feature = "math-native", not(feature = "std")))]
+compile_error!("Feature \"math-native\" requires the \"std\" feature");
+
+#[cfg(all(feature = "math-native", feature = "math-libm"))]
+compile_error!("Features \"math-native\" and \"math-libm\" are mutually exclusive");
+
+#[cfg(not(any(feature = "math-native", feature = "math-libm")))]
+compile_error!("Either \"math-native\" or \"math-libm\" feature must be enabled");
+
 use core::{
     fmt,
     ops::{Bound, RangeBounds as _},
 };
 
-use nalgebra::Matrix3;
+use nalgebra::{ComplexField, Matrix3};
+#[cfg(feature = "std")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 // TODO: the trait will live in the runtime crate and be re-exported next to the derive macro
@@ -39,7 +51,8 @@ pub trait Patch: Validate {
 }
 
 /// List of supported celestial body kinds.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub enum CelestialBodyKind {
     /// Sun.
     Sun,
@@ -55,12 +68,14 @@ pub enum CelestialBodyKind {
 #[derive(Clone)]
 pub struct InertiaMatrix(Matrix3<f64>);
 
+#[cfg(feature = "std")]
 impl Serialize for InertiaMatrix {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         InertiaMatrixSerializable::from(self.clone()).serialize(serializer)
     }
 }
 
+#[cfg(feature = "std")]
 impl<'de> Deserialize<'de> for InertiaMatrix {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = InertiaMatrixSerializable::deserialize(deserializer)?;
@@ -115,8 +130,9 @@ impl Patch for InertiaMatrix {
 }
 
 /// Serde representation of a [`InertiaMatrix`].
-#[derive(Clone, Serialize, Deserialize)]
-// #[serde(try_from = "InertiaMatrixSerializableDraft")]
+#[derive(Clone)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+// #[cfg_attr(feature = "std", serde(try_from = "InertiaMatrixSerializableDraft"))]
 // #[derive(Validate, Patch)]
 // #[final_validation(validate_realizability, error = InertiaMatrixRealizabilityValidationError)]
 pub struct InertiaMatrixSerializable {
@@ -212,17 +228,22 @@ impl InertiaMatrixSerializable {
             && s11 >= -Self::REALIZABILITY_TOLERANCE
             && s22 >= -Self::REALIZABILITY_TOLERANCE;
 
+        // The qualified ComplexField calls make the fused multiply add follow the selected
+        // math feature, the inherent f64 method would always resolve to the native one
         // Order 2: the three 2x2 principal minors.
-        let minor_2_ok = s01.mul_add(-s01, s00 * s11) >= -Self::REALIZABILITY_TOLERANCE
-            && s02.mul_add(-s02, s00 * s22) >= -Self::REALIZABILITY_TOLERANCE
-            && s12.mul_add(-s12, s11 * s22) >= -Self::REALIZABILITY_TOLERANCE;
+        let minor_2_ok =
+            ComplexField::mul_add(s01, -s01, s00 * s11) >= -Self::REALIZABILITY_TOLERANCE
+                && ComplexField::mul_add(s02, -s02, s00 * s22) >= -Self::REALIZABILITY_TOLERANCE
+                && ComplexField::mul_add(s12, -s12, s11 * s22) >= -Self::REALIZABILITY_TOLERANCE;
 
         // Order 3: the determinant.
-        let determinant = s02.mul_add(
-            s01.mul_add(s12, -(s11 * s02)),
-            s01.mul_add(
-                -s12.mul_add(-s02, s01 * s22),
-                s00 * s12.mul_add(-s12, s11 * s22),
+        let determinant = ComplexField::mul_add(
+            s02,
+            ComplexField::mul_add(s01, s12, -(s11 * s02)),
+            ComplexField::mul_add(
+                s01,
+                -ComplexField::mul_add(s12, -s02, s01 * s22),
+                s00 * ComplexField::mul_add(s12, -s12, s11 * s22),
             ),
         );
         let determinant_ok = determinant >= -Self::REALIZABILITY_TOLERANCE;
@@ -304,7 +325,7 @@ pub enum InertiaMatrixSerializableValidationError {
 }
 
 /// Draft construction of a [`InertiaMatrixSerializable`].
-#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub struct InertiaMatrixSerializableDraft {
     /// Ixx.
     pub xx: f64,
@@ -697,9 +718,10 @@ impl Patch for InertiaMatrixSerializable {
 ///
 /// A value of 1.0 represents full sunlight and 0.0 represents full eclipse.
 #[repr(transparent)]
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 // #[derive(Validate, Patch)]
-#[serde(try_from = "ShadowFractionDraft")]
+#[cfg_attr(feature = "std", serde(try_from = "ShadowFractionDraft"))]
 pub struct ShadowFraction(
     // #[validate(range(0.0..=1.0))]
     f64,
@@ -737,7 +759,7 @@ pub enum ShadowFractionValidationError {
 }
 
 /// Draft construction of a [`ShadowFraction`].
-#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub struct ShadowFractionDraft(pub f64);
 
 impl ShadowFractionDraft {
@@ -821,9 +843,10 @@ impl Patch for ShadowFraction {
 /* --------- WRITTEN ------------ */
 
 /// Reference physical properties of a spacecraft used during dynamical simulations.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 // #[derive(Validate, Patch)]
-#[serde(try_from = "SpacecraftDraft")]
+#[cfg_attr(feature = "std", serde(try_from = "SpacecraftDraft"))]
 // #[final_validation(validate_mass_sum, error = SpacecraftMassSumValidationError)]
 pub struct Spacecraft {
     /// Total spacecraft mass expressed in kilograms (kg).
@@ -924,7 +947,7 @@ pub enum SpacecraftValidationError {
     SunShadowFractionValidationError(<ShadowFraction as Validate>::Error),
 }
 
-#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 /// Draft construction of a [`Spacecraft`].
 pub struct SpacecraftDraft {
     /// Total spacecraft mass expressed in kilograms (kg).
@@ -1189,6 +1212,11 @@ mod tests {
         CelestialBodyKind, InertiaMatrixSerializableDraft, InertiaMatrixSerializableField,
         InertiaMatrixSerializableValidationError, ShadowFractionDraft, SpacecraftDraft,
     };
+
+    // Mark serde_json as used so `unused_crate_dependencies` stays quiet when the std feature
+    // is disabled and the serde integration tests are compiled out
+    #[cfg(not(feature = "std"))]
+    use serde_json as _;
 
     /// Valid inertia draft with a diagonal of 2.0, 3.0 and 4.0 kg·m².
     const VALID_INERTIA_DRAFT: InertiaMatrixSerializableDraft =
@@ -2478,6 +2506,7 @@ mod tests {
     }
 
     /// Serde wire format and deserialization firewall.
+    #[cfg(feature = "std")]
     mod serde_integration {
         use super::{VALID_SPACECRAFT_DRAFT, assert_float_eq};
         use crate::{CelestialBodyKind, InertiaMatrix, ShadowFraction, Spacecraft};
