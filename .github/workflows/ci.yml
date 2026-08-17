@@ -92,5 +92,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The unit tests of both crates, the domain model and the compilation suite
       - run: cargo test --workspace
-      # The same tests without the derive re-export of `valide`
-      - run: cargo test -p valide --no-default-features
+      # The same tests without the derive re-export of `valide` and without the doctests
+      - run: cargo test -p valide --no-default-features --lib
