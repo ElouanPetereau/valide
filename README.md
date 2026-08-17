@@ -107,8 +107,9 @@ cargo fmt --all --check
 - A fail fixture is a file that must not compile, next to a `.stderr` snapshot of the exact diagnostic it must produce.
 - A pass fixture is a file that must compile and run, which proves the generated code resolves from a crate that is not `valide`.
 
-Regenerate the snapshots after you change a diagnostic on purpose, then read every regenerated file before you keep it.
-
+The compilation suite pins compiler diagnostics inside its `.stderr` snapshots.
+A toolchain update that changes the diagnostic or a voluntary change in the expected diagnostic rendering breaks the suite.
+The snapshots need to be regenerated with `TRYBUILD=overwrite`:
 ```bash
 TRYBUILD=overwrite cargo test -p valide_derive --test ui
 ```
