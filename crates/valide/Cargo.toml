@@ -3,6 +3,9 @@ name = "valide"
 version.workspace = true
 edition.workspace = true
 
+[dependencies]
+valide_derive = { path = "../valide_derive", default-features = false, optional = true }
+
 [dev-dependencies]
 nalgebra = { version = "0.34.0", default-features = false, features = ["std"] }
 serde = {
@@ -15,10 +18,12 @@ serde = {
 }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 thiserror = { version = "2.0.16", default-features = false }
+valide_derive = { path = "../valide_derive", default-features = false }
 
 [features]
-default = ["std"]
-std = []
+default = ["derive"]
+# Enable the derive macros that generate a lots of boilerplate code for this crate traits.
+derive = ["dep:valide_derive"]
 
 [lints]
 workspace = true
