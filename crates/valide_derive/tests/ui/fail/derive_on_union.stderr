@@ -1,0 +1,5 @@
+error: a validated type must be a struct, not a union
+ --> tests/ui/fail/derive_on_union.rs:4:1
+  |
+4 | union Number {
+  | ^^^^^

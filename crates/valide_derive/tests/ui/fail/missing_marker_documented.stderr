@@ -1,0 +1,5 @@
+error: a field needs exactly one #[validate(...)] marker among range(...), finite, nested and skip
+ --> tests/ui/fail/missing_marker_documented.rs:6:5
+  |
+6 |     value: f64,
+  |     ^^^^^

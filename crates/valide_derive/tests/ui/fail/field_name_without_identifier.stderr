@@ -1,0 +1,11 @@
+error: the derive cannot build an identifier from the `_1` name, which gives the invalid Pascal case spelling `1`
+ --> tests/ui/fail/field_name_without_identifier.rs:6:5
+  |
+6 |     _1: f64,
+  |     ^^
+
+error: the derive cannot build an identifier from the `__` name, which gives the invalid Pascal case spelling ``
+ --> tests/ui/fail/field_name_without_identifier.rs:8:5
+  |
+8 |     __: f64,
+  |     ^^

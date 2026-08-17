@@ -1,0 +1,5 @@
+error: #[validate(range(...))] takes one range expression or two core::ops::Bound values
+ --> tests/ui/fail/range_no_args.rs:5:16
+  |
+5 |     #[validate(range())]
+  |                ^^^^^^^

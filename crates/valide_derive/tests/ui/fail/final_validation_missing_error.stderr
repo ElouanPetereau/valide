@@ -1,0 +1,5 @@
+error: #[final_validation(...)] must be written #[final_validation(fn, error = Type)]
+ --> tests/ui/fail/final_validation_missing_error.rs:4:20
+  |
+4 | #[final_validation(validate_fraction)]
+  |                    ^^^^^^^^^^^^^^^^^

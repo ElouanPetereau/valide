@@ -1,0 +1,11 @@
+error: #[draft_attr(...)] takes the attribute to re-emit on the generated draft as its payload
+ --> tests/ui/fail/draft_attr_bad_form.rs:4:1
+  |
+4 | #[draft_attr]
+  | ^^^^^^^^^^^^^
+
+error: #[draft_attr(...)] takes the attribute to re-emit on the generated draft as its payload
+ --> tests/ui/fail/draft_attr_bad_form.rs:5:1
+  |
+5 | #[draft_attr = "derive(Debug)"]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

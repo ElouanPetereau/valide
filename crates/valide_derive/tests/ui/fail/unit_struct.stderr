@@ -1,0 +1,5 @@
+error: a validated type must have at least one field
+ --> tests/ui/fail/unit_struct.rs:4:8
+  |
+4 | struct Fraction;
+  |        ^^^^^^^^

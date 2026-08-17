@@ -1,0 +1,5 @@
+error: #[validate(range(...))] takes one range expression or two core::ops::Bound values
+ --> tests/ui/fail/range_three_args.rs:5:16
+  |
+5 |     #[validate(range(Bound::Included(0.0), Bound::Excluded(1.0), Bound::Unbounded))]
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

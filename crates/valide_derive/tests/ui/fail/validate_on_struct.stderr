@@ -1,0 +1,5 @@
+error: #[validate(...)] describes a field, a whole type is described by #[final_validation(...)]
+ --> tests/ui/fail/validate_on_struct.rs:4:1
+  |
+4 | #[validate(finite)]
+  | ^^^^^^^^^^^^^^^^^^^

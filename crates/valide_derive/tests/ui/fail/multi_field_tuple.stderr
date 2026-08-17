@@ -1,0 +1,5 @@
+error: a validated tuple struct must have exactly one field
+ --> tests/ui/fail/multi_field_tuple.rs:4:17
+  |
+4 | struct Fraction(f64, f64);
+  |                 ^^^^^^^^

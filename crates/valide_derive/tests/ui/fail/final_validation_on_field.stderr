@@ -1,0 +1,5 @@
+error: #[final_validation(...)] describes a whole type, not a field
+ --> tests/ui/fail/final_validation_on_field.rs:5:5
+  |
+5 |     #[final_validation(validate_fraction, error = FractionValidationError)]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

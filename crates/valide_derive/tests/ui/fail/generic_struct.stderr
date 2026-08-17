@@ -1,0 +1,5 @@
+error: a validated type must not be generic
+ --> tests/ui/fail/generic_struct.rs:4:16
+  |
+4 | struct Fraction<Number> {
+  |                ^^^^^^^^

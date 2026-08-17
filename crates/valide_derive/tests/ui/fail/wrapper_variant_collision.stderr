@@ -1,0 +1,11 @@
+error: the generated error variant `SunShadowFractionValidationError` would be generated twice
+ --> tests/ui/fail/wrapper_variant_collision.rs:4:20
+  |
+4 | #[final_validation(validate_sun_shadow_fraction, error = f64)]
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: the same `SunShadowFractionValidationError` variant also comes from here
+ --> tests/ui/fail/wrapper_variant_collision.rs:7:5
+  |
+7 |     sun_shadow_fraction: f64,
+  |     ^^^^^^^^^^^^^^^^^^^

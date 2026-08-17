@@ -1,0 +1,5 @@
+error: a bound must be Bound::Included(value), Bound::Excluded(value) or Bound::Unbounded
+ --> tests/ui/fail/bound_form_bad_variant.rs:5:44
+  |
+5 |     #[validate(range(Bound::Included(0.0), Bound::Beyond(1.0)))]
+  |                                            ^^^^^^^^^^^^^
