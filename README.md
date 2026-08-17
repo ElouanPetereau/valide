@@ -1,5 +1,10 @@
 # Valide
 
+[![Build Status]][actions]
+
+[Build Status]: https://img.shields.io/github/actions/workflow/status/ElouanPETEREAU/valide/ci.yml?branch=main
+[actions]: https://github.com/ElouanPETEREAU/valide/actions?query=branch%3Amain
+
 **A crate for types that can only be built through a validation, with validated setters to patch them.**
 
 A validated type has no public constructor and no public fields.\
