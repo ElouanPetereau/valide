@@ -3,32 +3,34 @@
 #![cfg_attr(not(test), no_std)]
 
 // TODO: the trait will live in the runtime crate and be re-exported next to the derive macro
-/// Marker trait for types constructible only from a validated draft.
+/// A type that can only be built from a validated draft.
 pub trait Validate: Sized {
     /// Unvalidated draft mirror of the type.
     type Draft;
-    /// Error produced when the draft is invalid.
+    /// Error that an invalid draft produces.
     type Error;
 
-    /// Validate the given `draft` with fail fast policy.
+    /// Validate the given `draft` with a fail fast policy.
     fn validate(draft: &Self::Draft) -> Result<(), Self::Error>;
 
-    /// Build the type from the given `draft` without validating it.
-    /// Only meant to be called by the generated code after a successful validation.
+    /// Build the type from the given `draft` and skip the validation.
+    /// The function is meant for the generated code, which calls it after a successful validation.
+    /// It enforces no rule of the type, so a direct call on an invalid `draft` builds an invalid
+    /// value.
     #[doc(hidden)]
     fn from_draft_unchecked(draft: Self::Draft) -> Self;
 
-    /// Build the type from the given `draft`, validating it first.
-    /// Return the first error found during `draft` validation.
+    /// Validate the given `draft`, then build the type from it.
+    /// Return the first error found in the `draft`.
     fn from_draft(draft: Self::Draft) -> Result<Self, Self::Error> {
         Self::validate(&draft)?;
         Ok(Self::from_draft_unchecked(draft))
     }
 }
 
-/// Marker trait for  types that can be patched field by field with validated setters.
+/// A type that can be patched field by field with validated setters.
 pub trait Patch: Validate {
-    /// Convert back to a draft for patching.
+    /// Convert the value back to a draft to patch it.
     fn to_draft(&self) -> Self::Draft;
 }
 
@@ -39,14 +41,7 @@ mod tests {
         InertiaMatrixSerializableValidationError, ShadowFractionDraft, SpacecraftDraft,
     };
 
-    // Mark serde and serde_json as used so `unused_crate_dependencies` stays quiet when the
-    // std feature is disabled and the serde parts are compiled out
-    #[cfg(not(feature = "std"))]
-    use serde as _;
-    #[cfg(not(feature = "std"))]
-    use serde_json as _;
-
-    /// Hand written model of the code that the future derive macros must generate.
+    /// Domain model that exercises the two derives of the crate.
     #[expect(
         unreachable_pub,
         reason = "the model mirrors the future crate code verbatim"
@@ -76,7 +71,7 @@ mod tests {
 
         /* --------- WRITTEN ------------ */
 
-        /// Inertial Matrix of a body.
+        /// Inertia matrix of a body.
         #[repr(transparent)]
         #[derive(Clone)]
         pub struct InertiaMatrix(Matrix3<f64>);
@@ -149,7 +144,7 @@ mod tests {
             }
         }
 
-        /// Serde representation of a [`InertiaMatrix`].
+        /// Serde representation of an [`InertiaMatrix`].
         #[derive(Clone)]
         #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
         // #[cfg_attr(feature = "std", serde(try_from = "InertiaMatrixSerializableDraft"))]
@@ -185,7 +180,7 @@ mod tests {
             zz: f64,
         }
 
-        /// Error type for [`InertiaMatrixSerializable::validate_realizability`] validation failures.
+        /// Error type of the [`InertiaMatrixSerializable::validate_realizability`] validation.
         #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
         pub enum InertiaMatrixRealizabilityValidationError {
             /// At least one off-diagonal pair differs by more than [`SYMMETRY_TOLERANCE`].
@@ -196,8 +191,8 @@ mod tests {
             /// The trace of the input matrix is negative, so no mass distribution can produce it.
             #[error("The inertia matrix trace must be non-negative")]
             NegativeTrace,
-            /// The derived mass covariance matrix is not positive semi-definite,
-            /// violating the triangle inequalities on the principal moments of inertia.
+            /// The derived mass covariance matrix is not positive semi-definite.
+            /// The principal moments of inertia do not respect the triangle inequalities.
             #[error("The mass covariance matrix must be positive semi-definite")]
             CovarianceNotPositiveSemiDefinite,
         }
@@ -210,13 +205,15 @@ mod tests {
             /// Absolute tolerance on the off-diagonal mismatch of the symmetry check.
             pub const SYMMETRY_TOLERANCE: f64 = 1e-9;
 
-            /// Absolute tolerance for the physical realizability check, in the unit of the compared quantity.
+            /// Absolute tolerance of the physical realizability check.
+            /// The tolerance uses the unit of the compared quantity.
             pub const REALIZABILITY_TOLERANCE: f64 = 1e-9;
 
-            /// Validation function to verify that the matrix of the given `draft` is symmetric
-            /// within [`Self::SYMMETRY_TOLERANCE`] and corresponds to a physically realizable
-            /// mass distribution within [`Self::REALIZABILITY_TOLERANCE`].
-            /// The entries are expected to be finite, which is enforced by the per field validations.
+            /// Check that the matrix of the given `draft` is symmetric within
+            /// [`Self::SYMMETRY_TOLERANCE`].
+            /// Check that it is a physically realizable mass distribution within
+            /// [`Self::REALIZABILITY_TOLERANCE`].
+            /// The entries must be finite, which the field validators enforce.
             pub fn validate_realizability(
                 draft: &InertiaMatrixSerializableDraft,
             ) -> Result<(), InertiaMatrixRealizabilityValidationError> {
@@ -775,9 +772,9 @@ mod tests {
 
         /* --------- WRITTEN ------------ */
 
-        /// Fraction of sunlight reaching a spacecraft, bounded to [0.0, 1.0].
+        /// Fraction of the sunlight that reaches a spacecraft, bounded to [0.0, 1.0].
         ///
-        /// A value of 1.0 represents full sunlight and 0.0 represents full eclipse.
+        /// A value of 1.0 represents full sunlight and 0.0 represents a full eclipse.
         #[repr(transparent)]
         #[derive(Clone)]
         #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
@@ -913,28 +910,29 @@ mod tests {
         #[cfg_attr(feature = "std", serde(try_from = "SpacecraftDraft"))]
         // #[final_validation(validate_mass_sum, error = SpacecraftMassSumValidationError)]
         pub struct Spacecraft {
-            /// Total spacecraft mass expressed in kilograms (kg).
+            /// Total spacecraft mass in kilograms (kg).
             // #[validate(range(0.0..f64::INFINITY))]
             mass: f64,
-            /// Mass of the spacecraft bus expressed in kilograms (kg).
+            /// Mass of the spacecraft bus in kilograms (kg).
             // #[validate(range(0.0..=30_000.0))]
             bus_mass: f64,
-            /// Mass of the spacecraft sail expressed in kilograms (kg).
+            /// Mass of the spacecraft sail in kilograms (kg).
             // #[validate(range(0.0..=10_000.0))]
             sail_mass: f64,
-            /// Moment of inertia matrix expressed in the body frame (kg·m²).
+            /// Moment of inertia matrix in the body frame (kg·m²).
             // #[validate(nested)]
             inertia_matrix: InertiaMatrix,
             /// Fraction of sunlight reaching the spacecraft.
             // #[validate(nested)]
             sun_shadow_fraction: ShadowFraction,
-            /// Celestial body this spacecraft is primarily orbiting around.
+            /// Celestial body that this spacecraft primarily orbits.
+            // A skip field must not be read by any final validation function
             // #[validate(skip)]
             // a skip field must not be read by any final validation function
             primary_orbited_body: CelestialBodyKind,
         }
 
-        /// Error type for [`Spacecraft::validate_mass_sum`] validation failures.
+        /// Error type of the [`Spacecraft::validate_mass_sum`] validation.
         #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
         pub enum SpacecraftMassSumValidationError {
             /// The spacecraft total mass is smaller than the sum of the bus and sail mass
@@ -953,8 +951,8 @@ mod tests {
             /// Absolute tolerance for the mass sum check, in kilograms (kg).
             pub const MASS_SUM_TOLERANCE: f64 = 1e-9;
 
-            /// Validation function to verify that the `mass` of the given `draft` is greater than
-            /// or equal to the sum of its `bus_mass` and `sail_mass` within [`Self::MASS_SUM_TOLERANCE`].
+            /// Check that the `mass` of the given `draft` is greater than or equal to the sum of
+            /// its `bus_mass` and `sail_mass`, within [`Self::MASS_SUM_TOLERANCE`].
             pub fn validate_mass_sum(
                 draft: &SpacecraftDraft,
             ) -> Result<(), SpacecraftMassSumValidationError> {
@@ -1351,7 +1349,7 @@ mod tests {
     ];
 
     /// Name, setter, validator and field enum variant of one inertia draft field.
-    /// Used to exercise every field validator individually.
+    /// Each case exercises one field validator.
     type InertiaFieldCase = (
         &'static str,
         fn(&mut InertiaMatrixSerializableDraft, f64),
@@ -1390,8 +1388,9 @@ mod tests {
         }
     }
 
-    /// Assert that `actual` is exactly `expected`, `described_as` naming the compared quantity.
-    /// The bit patterns are compared so the check stays exact and never compares floats directly.
+    /// Assert that `actual` is exactly `expected`.
+    /// The `described_as` argument names the compared quantity.
+    /// The function compares the bit patterns, so the check stays exact without a float comparison.
     fn assert_float_eq(actual: f64, expected: f64, described_as: &str) {
         assert_eq!(
             actual.to_bits(),
@@ -1400,8 +1399,8 @@ mod tests {
         );
     }
 
-    /// Write `new_value` in the inertia draft field selected by `set_field` on an otherwise valid
-    /// draft and return the result of the matching per field validator `validate_field`.
+    /// Write `new_value` in the field that `set_field` selects, on an otherwise valid draft.
+    /// Return the result of the matching field validator `validate_field`.
     fn validate_inertia_field(
         set_field: fn(&mut InertiaMatrixSerializableDraft, f64),
         validate_field: fn(
@@ -1414,7 +1413,7 @@ mod tests {
         validate_field(&draft)
     }
 
-    /// Per field validation of every validated type.
+    /// Field validators of every validated type.
     mod field_validation {
         /// Bounds of the shadow fraction value.
         mod shadow_fraction {
@@ -1666,7 +1665,7 @@ mod tests {
             }
         }
 
-        /// Bounds of the spacecraft masses and wrapping of the nested field errors.
+        /// Bounds of the spacecraft masses and wrapper variants of the nested errors.
         mod spacecraft_masses {
             use super::super::model::{
                 InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
@@ -1827,7 +1826,7 @@ mod tests {
             }
         }
 
-        /// Ordering guarantees of the fail fast validation.
+        /// Order guarantees of the fail fast validation.
         mod fail_fast_order {
             use super::super::model::{
                 InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
@@ -1889,7 +1888,7 @@ mod tests {
         }
     }
 
-    /// Final validation functions called directly on hand built drafts.
+    /// Direct calls of the final validations on hand built drafts.
     mod final_validation {
         /// Symmetry and physical realizability of an inertia matrix draft.
         mod realizability {
@@ -2263,7 +2262,8 @@ mod tests {
             InertiaMatrix, InertiaMatrixSerializable, InertiaMatrixSerializableDraft,
         };
 
-        /// Build an inertia draft where every entry differs, exposing any transposition.
+        /// Build an inertia draft where every entry differs.
+        /// The distinct entries expose any transposition.
         fn distinct_inertia_draft() -> InertiaMatrixSerializableDraft {
             InertiaMatrixSerializableDraft {
                 xx: 1.0,
@@ -2582,8 +2582,8 @@ mod tests {
         use super::model::{CelestialBodyKind, InertiaMatrix, ShadowFraction, Spacecraft};
         use super::{VALID_SPACECRAFT_DRAFT, assert_float_eq};
 
-        /// Build the JSON document of a spacecraft with the given masses and inertia `inertia_xx`,
-        /// every other entry matching the standard valid spacecraft draft.
+        /// Build the JSON document of a spacecraft with the given masses and inertia `inertia_xx`.
+        /// Every other entry matches the standard valid spacecraft draft.
         fn spacecraft_json_value(
             mass: f64,
             bus_mass: f64,
@@ -2610,13 +2610,13 @@ mod tests {
             })
         }
 
-        /// Build the JSON document matching the standard valid spacecraft draft.
+        /// Build the JSON document that matches the standard valid spacecraft draft.
         fn valid_spacecraft_json_value() -> serde_json::Value {
             spacecraft_json_value(1000.0, 600.0, 300.0, 2.0)
         }
 
-        /// Return the message of the failed deserialization `result`,
-        /// `described_as` naming the document that had to be rejected.
+        /// Return the message of the failed deserialization `result`.
+        /// The `described_as` argument names the document that the deserialization must reject.
         fn deserialization_error_message<Deserialized>(
             result: Result<Deserialized, serde_json::Error>,
             described_as: &str,
