@@ -129,7 +129,7 @@ a new field never escapes the validation by accident.
 ### Attributes of a field
 
 - Every `#[serde(...)]` attribute of a field also reaches the matching draft field, verbatim.
-  A renamed key therefore stays the same on both sides of a deserialization firewall.
+  A renamed key therefore stays the same on both sides of a deserialization validation.
 - `#[draft_attr(...)]` also works on a field. The matching draft field carries its payload, the
   same way the type level attribute works on the draft itself.
 - The documentation of a field reaches the draft field. A field without documentation gets a

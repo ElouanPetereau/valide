@@ -426,11 +426,11 @@ fn has_serde_try_from(attributes: &[Attribute]) -> bool {
             return false;
         }
 
-        let mut carries_firewall = false;
+        let mut carries_validation = false;
         // A serde attribute that the walk cannot read carries no key at all, and the draft then mirrors nothing
         let _walk: Result<()> = attribute.parse_nested_meta(|meta| {
             if meta.path.is_ident(TRY_FROM_KEY) {
-                carries_firewall = true;
+                carries_validation = true;
             }
             // The walk owns the value of the key, which ends at the next key of the attribute
             while !meta.input.is_empty() && !meta.input.peek(Token![,]) {
@@ -440,7 +440,7 @@ fn has_serde_try_from(attributes: &[Attribute]) -> bool {
             Ok(())
         });
 
-        carries_firewall
+        carries_validation
     })
 }
 
