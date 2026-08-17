@@ -1326,6 +1326,34 @@ mod tests {
                 "Both construction paths must report the same error"
             );
         }
+
+        #[test]
+        fn a_wrapper_variant_reports_the_error_it_holds_as_its_source() {
+            let draft = SpacecraftDraft {
+                inertia_matrix: diagonal_inertia_draft(0.0, 3.0, 4.0),
+                ..VALID_SPACECRAFT_DRAFT
+            };
+            let error = Spacecraft::new(draft)
+                .err()
+                .expect("A zero inertia diagonal must be rejected");
+
+            assert!(
+                error.source().is_some(),
+                "A wrapper variant must report the error of the nested field as its source"
+            );
+        }
+
+        #[test]
+        fn a_field_variant_reports_no_source() {
+            let error = Spacecraft::new(spacecraft_draft_with_masses(-1.0, 600.0, 300.0))
+                .err()
+                .expect("A negative mass must be rejected");
+
+            assert!(
+                error.source().is_none(),
+                "A field variant holds no error, so it must report no source"
+            );
+        }
     }
 
     /// Conversions between the wrapper, its serde representation and its draft.
