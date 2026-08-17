@@ -1,6 +1,6 @@
-# valide
+# Valide
 
-A crate for types that can only be built through a validation, with validated setters to patch them.
+**A crate for types that can only be built through a validation, with validated setters to patch them.**
 
 A validated type has no public constructor and no public fields.\
 To build one you fill a draft, which is a plain mirror struct with public fields, then you hand the draft to the type.
@@ -9,16 +9,27 @@ Once you hold the value, it passed every rule the type declares.
 
 Two derive macros (`Validate` and `Patch`) generate that machinery, so a type declares its rules as attributes instead of carrying hand written validation code.
 
-## Features
+---
 
-| Feature | Default | Effect |
-| --- | --- | --- |
-| `derive` | Yes | Re-export the two derive macros from `valide` |
-
-Disable the feature to take the traits alone, which drops the compile time cost of the macro dependencies.\
-You then implement the traits by hand.
+You may be looking for:
+- [An overview of valide](./OVERVIEW.md)
 
 ## Example
+
+<details>
+<summary>
+Click to show Cargo.toml.
+</summary>
+
+```toml
+[dependencies]
+
+# The core APIs, including the Validate and Patch traits.
+# The "derive" feature is only required when using #[derive(Validate, Patch)] to use the derives to generate most of the boilerplate code.
+validate = { version = "0.1.0", features = ["derive"] }
+```
+
+</details>
 
 ```rust
 use valide::{Patch, Validate};
@@ -56,101 +67,48 @@ impl Spacecraft {
         Ok(())
     }
 }
+
+fn main() {
+    // Build a validated spacecraft
+    let mut spacecraft = Spacecraft::new(SpacecraftDraft {
+        mass: 1000.0,
+        bus_mass: 600.0,
+        mission: "Sextant".to_owned(),
+    })
+    .expect("The given SpacecraftDraft should be valid");
+}
 ```
 
-The derives generate `SpacecraftDraft`, so you build a spacecraft like this:
+## Build and test
 
-```rust, ignore
-let mut spacecraft = Spacecraft::new(SpacecraftDraft {
-    mass: 1000.0,
-    bus_mass: 600.0,
-    mission: "Sextant".to_owned(),
-})?;
+Build the workspace.
+
+```bash
+cargo build
 ```
 
-## Generated items
+This runs the unit tests of the macros, the domain model that exercises both derives, and the compilation suite.
 
-`Validate` generates:
+```bash
+cargo test
+```
 
-- The draft, the only way in.
-  It carries no invariant, so you can build it field by field, read it from a file or receive it over a network.
-  A `nested` field appears as the draft of its own type, named through the projection `<FieldType as Validate>::Draft`.
-- One validator per validated field, callable alone to test one rule on its own.
-- The aggregated function `validate`, which runs the field validators in declaration order, stops at the first error, then runs every final validation.
-  A final validation holds a rule that spans several fields, so it always reads a draft whose fields are individually valid.
-- The error enum.
-  The shared `OutOfRange` and `NotFinite` variants carry a generated field enum that names the failing field.
-  One wrapper variant exists per final validation and per fallible nested field.
-- The `TryFrom` of the draft and the `new` constructor, the two validated entry points.
-  When using the [`serde`](https://docs.rs/serde/latest/serde/) crate, write `#[serde(try_from = "TypeDraft")]` on the type so the whole validation also guards deserialization.
-- The getters.
-  A primitive field returns its value, every other field returns a reference.
-- The `Validate` implementation.
+Run the lints and the formatting.
+The workspace shares one lint set, and the build must stay free of warnings.
 
-`Patch` generates:
-- The conversion back to a draft.
-- The `Patch` implementation.
-- One setter per field.
-  A setter validates a draft that carries the new value and commits the value only on success.
-  A rejected patch leaves the spacecraft untouched.
+```bash
+cargo clippy --workspace --all-targets
+cargo fmt --all --check
+```
 
-## The grammar
+### Compilation tests
 
-### Markers of a field
+`valide_derive` carries a trybuild suite:
+- A fail fixture is a file that must not compile, next to a `.stderr` snapshot of the exact diagnostic it must produce.
+- A pass fixture is a file that must compile and run, which proves the generated code resolves from a crate that is not `valide`.
 
-Every field must carry exactly one marker. A field without a marker is a compilation error, so
-a new field never escapes the validation by accident.
+Regenerate the snapshots after you change a diagnostic on purpose, then read every regenerated file before you keep it.
 
-- `#[validate(range(0.0..=1.0))]` accepts one range expression. The value must be inside it.
-- `#[validate(range(Bound::Excluded(0.0), Bound::Excluded(f64::INFINITY)))]` accepts two bounds.
-  Use this form for a range that the range syntax cannot spell, such as an excluded lower bound.
-  The generated check resolves `Bound` in the module of the validated type, which must import it.
-- `#[validate(finite)]` accepts a floating point value that is neither infinite nor a not a
-  number value. The marker is meant for `f32` and `f64`, because the generated check calls the
-  inherent `is_finite` method of the field type.
-- `#[validate(nested)]` delegates the validation to the type of the field, which must implement
-  `Validate`. The draft of the type holds the draft of the field.
-- `#[validate(skip)]` excludes the field from every field validation, so the field gets no
-  validator. The setter of the field stays infallible while the type declares no final
-  validation. As soon as the type declares one final validation, the setter becomes fallible.
-  It then builds the draft, runs every final validation and commits the new value only on
-  success, because a final validation can read a skip field.
-
-### Attributes of a type
-
-- `#[final_validation(function, error = ErrorType)]` runs `function` once every field validator
-  passed. The function takes a reference to the draft and returns `Result<(), ErrorType>`.
-  Repeat the attribute to run several functions in order.
-  The function must be an inherent associated function of the validated type, because the
-  generated call names it `Type::function(draft)`. A free function does not work.
-- `#[draft_attr(...)]` carries its payload to the generated draft as an attribute. Use it to
-  give the draft the derives that the validated type cannot infer.
-
-### Attributes of a field
-
-- Every `#[serde(...)]` attribute of a field also reaches the matching draft field, verbatim.
-  A renamed key therefore stays the same on both sides of a deserialization validation.
-- `#[draft_attr(...)]` also works on a field. The matching draft field carries its payload, the
-  same way the type level attribute works on the draft itself.
-- The documentation of a field reaches the draft field. A field without documentation gets a
-  generated one, because every field of the draft is public.
-
-### The skip contract
-
-A skip field takes part in no field validation. Its setter stays infallible while the type declares
-no final validation. As soon as the type declares one final validation, the setter becomes fallible
-and runs every final validation, because a final validation can read a skip field.
-
-### Newtypes
-
-A tuple struct with one field is supported. The single field is called `value`, so the getter is
-`value()`, the setter is `set_value()`, the validator is `validate_value()` and the field enum
-variant is `Value`.
-
-## Limitations
-
-- A validated type must be a struct. An enum, a union and a generic type are rejected with a clear error.
-- A tuple struct must have exactly one field.
-- The by value getter uses the written token of the field type, so an alias to a primitive gets a getter that returns a reference.
-- `Validate::from_draft_unchecked` skips the validation. It exists for the generated code.
-  A direct call on an invalid draft builds an invalid value.
+```bash
+TRYBUILD=overwrite cargo test -p valide_derive --test ui
+```
