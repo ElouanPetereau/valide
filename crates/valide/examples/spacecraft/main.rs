@@ -40,7 +40,7 @@ fn main() {
         .set_bus_mass(650.0)
         .expect("New bus mass should be valid");
 
-    // Serde is fully supported using `#[serde(try_from = "SpacecraftDraft<Area>")]` so deserialization will run the validation steps as well
+    // Serde is fully supported using `#[serde(try_from = "SpacecraftDraft<Type>")]` so deserialization will run the validation steps as well
     let serialized_spacecraft = serde_json::to_value(&spacecraft)
         .expect("A valid spacecraft must serialize")
         .to_string();

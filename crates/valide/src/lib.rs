@@ -50,7 +50,8 @@ pub trait Patch: Validate {
 #[cfg(test)]
 #[path = "../examples/spacecraft"] // The domain model of the tests is the model of the `spacecraft` example.
 mod tests {
-    use nalgebra::ComplexField;
+    use nalgebra::RealField;
+    use num_traits::Float;
 
     use self::model::{
         CelestialBodyKind, InertiaMatrixSerializableDraft, InertiaMatrixSerializableField,
@@ -70,7 +71,7 @@ mod tests {
     mod model;
 
     /// Valid inertia draft with a diagonal of 2.0, 3.0 and 4.0 kg·m².
-    const VALID_INERTIA_DRAFT: InertiaMatrixSerializableDraft =
+    const VALID_INERTIA_DRAFT: InertiaMatrixSerializableDraft<f64> =
         diagonal_inertia_draft(2.0, 3.0, 4.0);
 
     /// Valid spacecraft draft of 1000.0 kg with a 600.0 kg bus, a 300.0 kg sail
@@ -144,13 +145,19 @@ mod tests {
     /// Each case exercises one field validator.
     type InertiaFieldCase = (
         &'static str,
-        fn(&mut InertiaMatrixSerializableDraft, f64),
-        fn(&InertiaMatrixSerializableDraft) -> Result<(), InertiaMatrixSerializableValidationError>,
+        fn(&mut InertiaMatrixSerializableDraft<f64>, f64),
+        fn(
+            &InertiaMatrixSerializableDraft<f64>,
+        ) -> Result<(), InertiaMatrixSerializableValidationError>,
         InertiaMatrixSerializableField,
     );
 
     /// Build an inertia draft with the given `xx`, `yy` and `zz` diagonal and zero off-diagonals.
-    const fn diagonal_inertia_draft(xx: f64, yy: f64, zz: f64) -> InertiaMatrixSerializableDraft {
+    const fn diagonal_inertia_draft(
+        xx: f64,
+        yy: f64,
+        zz: f64,
+    ) -> InertiaMatrixSerializableDraft<f64> {
         InertiaMatrixSerializableDraft {
             xx,
             xy: 0.0,
@@ -160,6 +167,27 @@ mod tests {
             yz: 0.0,
             zx: 0.0,
             zy: 0.0,
+            zz,
+        }
+    }
+
+    /// Build an inertia draft with the given `xx`, `yy` and `zz` diagonal and zero off-diagonals.
+    /// The zero of the parameter comes from a trait function, which a constant function cannot call,
+    /// so this builder is a plain function while [`diagonal_inertia_draft`] stays a constant one.
+    fn diagonal_inertia_draft_with_precision<Type: RealField + Float>(
+        xx: Type,
+        yy: Type,
+        zz: Type,
+    ) -> InertiaMatrixSerializableDraft<Type> {
+        InertiaMatrixSerializableDraft {
+            xx,
+            xy: Type::zero(),
+            xz: Type::zero(),
+            yx: Type::zero(),
+            yy,
+            yz: Type::zero(),
+            zx: Type::zero(),
+            zy: Type::zero(),
             zz,
         }
     }
@@ -185,13 +213,17 @@ mod tests {
     /// The area carries the precision of the returned draft, so the function reaches every
     /// precision that the parameter of the spacecraft accepts.
     /// Every other field matches the standard valid spacecraft draft.
-    fn spacecraft_draft_with_area<Area: ComplexField>(area: Area) -> SpacecraftDraft<Area> {
+    fn spacecraft_draft_with_area<Type: RealField + Float>(area: Type) -> SpacecraftDraft<Type> {
         SpacecraftDraft {
             mass: 1000.0,
             bus_mass: 600.0,
             sail_mass: 300.0,
             area,
-            inertia_matrix: VALID_INERTIA_DRAFT,
+            inertia_matrix: diagonal_inertia_draft_with_precision(
+                Type::from(2.0).expect("2.0 is guaranteed to fit in any Float"),
+                Type::from(3.0).expect("3.0 is guaranteed to fit in any Float"),
+                Type::from(4.0).expect("4.0 is guaranteed to fit in any Float"),
+            ),
             sun_shadow_fraction: ShadowFractionDraft(0.5),
             primary_orbited_body: CelestialBodyKind::Earth,
         }
@@ -211,9 +243,9 @@ mod tests {
     /// Write `new_value` in the field that `set_field` selects, on an otherwise valid draft.
     /// Return the result of the matching field validator `validate_field`.
     fn validate_inertia_field(
-        set_field: fn(&mut InertiaMatrixSerializableDraft, f64),
+        set_field: fn(&mut InertiaMatrixSerializableDraft<f64>, f64),
         validate_field: fn(
-            &InertiaMatrixSerializableDraft,
+            &InertiaMatrixSerializableDraft<f64>,
         ) -> Result<(), InertiaMatrixSerializableValidationError>,
         new_value: f64,
     ) -> Result<(), InertiaMatrixSerializableValidationError> {
@@ -319,8 +351,13 @@ mod tests {
 
         /// Bounds of the three diagonal inertia entries, valid over the open range ]0, +inf[.
         mod inertia_matrix_diagonal {
-            use super::super::model::InertiaMatrixSerializableValidationError;
-            use super::super::{DIAGONAL_INERTIA_FIELD_CASES, validate_inertia_field};
+            use super::super::model::{
+                InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
+            };
+            use super::super::{
+                DIAGONAL_INERTIA_FIELD_CASES, diagonal_inertia_draft_with_precision,
+                validate_inertia_field,
+            };
 
             #[test]
             fn rejects_zero() {
@@ -331,7 +368,7 @@ mod tests {
                         validate_inertia_field(set_field, validate_field, 0.0),
                         Err(InertiaMatrixSerializableValidationError::OutOfRange {
                             field: expected_field,
-                            range: "]0.0, +inf[",
+                            range: "]Type::zero(), Type::infinity()[",
                         }),
                         "The excluded lower bound 0.0 must be rejected for the {field_name} field"
                     );
@@ -369,7 +406,7 @@ mod tests {
                         validate_inertia_field(set_field, validate_field, -1.0),
                         Err(InertiaMatrixSerializableValidationError::OutOfRange {
                             field: expected_field,
-                            range: "]0.0, +inf[",
+                            range: "]Type::zero(), Type::infinity()[",
                         }),
                         "A negative value must be rejected for the {field_name} field"
                     );
@@ -377,7 +414,7 @@ mod tests {
             }
 
             #[test]
-            fn rejects_positive_infinity() {
+            fn rejects_positive_infinity_at_f64_precision() {
                 for (field_name, set_field, validate_field, expected_field) in
                     DIAGONAL_INERTIA_FIELD_CASES
                 {
@@ -385,7 +422,7 @@ mod tests {
                         validate_inertia_field(set_field, validate_field, f64::INFINITY),
                         Err(InertiaMatrixSerializableValidationError::OutOfRange {
                             field: expected_field,
-                            range: "]0.0, +inf[",
+                            range: "]Type::zero(), Type::infinity()[",
                         }),
                         "The excluded positive infinity must be rejected for the {field_name} field"
                     );
@@ -393,7 +430,21 @@ mod tests {
             }
 
             #[test]
-            fn rejects_nan() {
+            fn rejects_positive_infinity_at_f32_precision() {
+                let draft = diagonal_inertia_draft_with_precision(2.0_f32, f32::INFINITY, 4.0_f32);
+
+                assert_eq!(
+                    draft.validate_yy(),
+                    Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                        field: InertiaMatrixSerializableField::Yy,
+                        range: "]Type::zero(), Type::infinity()[",
+                    }),
+                    "The excluded positive infinity must be rejected at the single precision"
+                );
+            }
+
+            #[test]
+            fn rejects_nan_at_f64_precision() {
                 for (field_name, set_field, validate_field, expected_field) in
                     DIAGONAL_INERTIA_FIELD_CASES
                 {
@@ -401,18 +452,37 @@ mod tests {
                         validate_inertia_field(set_field, validate_field, f64::NAN),
                         Err(InertiaMatrixSerializableValidationError::OutOfRange {
                             field: expected_field,
-                            range: "]0.0, +inf[",
+                            range: "]Type::zero(), Type::infinity()[",
                         }),
                         "A not a number value must be rejected for the {field_name} field"
                     );
                 }
             }
+
+            #[test]
+            fn rejects_nan_at_f32_precision() {
+                let draft = diagonal_inertia_draft_with_precision(f32::NAN, 3.0_f32, 4.0_f32);
+
+                assert_eq!(
+                    draft.validate_xx(),
+                    Err(InertiaMatrixSerializableValidationError::OutOfRange {
+                        field: InertiaMatrixSerializableField::Xx,
+                        range: "]Type::zero(), Type::infinity()[",
+                    }),
+                    "A not a number diagonal entry must be rejected at the single precision"
+                );
+            }
         }
 
         /// Finiteness of the six off-diagonal inertia entries.
         mod inertia_matrix_off_diagonal {
-            use super::super::model::InertiaMatrixSerializableValidationError;
-            use super::super::{OFF_DIAGONAL_INERTIA_FIELD_CASES, validate_inertia_field};
+            use super::super::model::{
+                InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
+            };
+            use super::super::{
+                OFF_DIAGONAL_INERTIA_FIELD_CASES, diagonal_inertia_draft_with_precision,
+                validate_inertia_field,
+            };
 
             #[test]
             fn accepts_zero_negative_and_large_finite() {
@@ -429,7 +499,7 @@ mod tests {
             }
 
             #[test]
-            fn rejects_nan() {
+            fn rejects_nan_at_f64_precision() {
                 for (field_name, set_field, validate_field, expected_field) in
                     OFF_DIAGONAL_INERTIA_FIELD_CASES
                 {
@@ -441,6 +511,20 @@ mod tests {
                         "A not a number value must be rejected for the {field_name} field"
                     );
                 }
+            }
+
+            #[test]
+            fn rejects_nan_at_f32_precision() {
+                let mut draft = diagonal_inertia_draft_with_precision(2.0_f32, 3.0_f32, 4.0_f32);
+                draft.xy = f32::NAN;
+
+                assert_eq!(
+                    draft.validate_xy(),
+                    Err(InertiaMatrixSerializableValidationError::NotFinite {
+                        field: InertiaMatrixSerializableField::Xy,
+                    }),
+                    "A not a number off-diagonal entry must be rejected at the single precision"
+                );
             }
 
             #[test]
@@ -608,7 +692,7 @@ mod tests {
                     Err(SpacecraftValidationError::InertiaMatrixValidationError(
                         InertiaMatrixSerializableValidationError::OutOfRange {
                             field: InertiaMatrixSerializableField::Xx,
-                            range: "]0.0, +inf[",
+                            range: "]Type::zero(), Type::infinity()[",
                         }
                     )),
                     "The nested inertia matrix error must be wrapped by the spacecraft error"
@@ -655,7 +739,7 @@ mod tests {
                     draft.validate(),
                     Err(InertiaMatrixSerializableValidationError::OutOfRange {
                         field: InertiaMatrixSerializableField::Xx,
-                        range: "]0.0, +inf[",
+                        range: "]Type::zero(), Type::infinity()[",
                     }),
                     "The xx field is declared first so its error must be reported"
                 );
@@ -704,7 +788,9 @@ mod tests {
             use super::super::model::{
                 InertiaMatrixRealizabilityValidationError, InertiaMatrixSerializable,
             };
-            use super::super::{VALID_INERTIA_DRAFT, diagonal_inertia_draft};
+            use super::super::{
+                VALID_INERTIA_DRAFT, diagonal_inertia_draft, diagonal_inertia_draft_with_precision,
+            };
 
             #[test]
             fn accepts_spherical_inertia() {
@@ -742,7 +828,7 @@ mod tests {
             #[test]
             fn accepts_asymmetry_at_tolerance() {
                 let mut draft = VALID_INERTIA_DRAFT;
-                draft.xy = InertiaMatrixSerializable::SYMMETRY_TOLERANCE;
+                draft.xy = InertiaMatrixSerializable::<f64>::SYMMETRY_TOLERANCE;
                 draft.yx = 0.0;
 
                 assert_eq!(
@@ -764,7 +850,7 @@ mod tests {
             }
 
             #[test]
-            fn rejects_triangle_inequality_violation() {
+            fn rejects_triangle_inequality_violation_at_f64_precision() {
                 assert_eq!(
                     InertiaMatrixSerializable::validate_realizability(&diagonal_inertia_draft(
                         1.0, 1.0, 3.0
@@ -773,6 +859,19 @@ mod tests {
                         InertiaMatrixRealizabilityValidationError::CovarianceNotPositiveSemiDefinite
                     ),
                     "A diagonal violating Ixx + Iyy >= Izz must be rejected"
+                );
+            }
+
+            #[test]
+            fn rejects_triangle_inequality_violation_at_f32_precision() {
+                assert_eq!(
+                    InertiaMatrixSerializable::validate_realizability(
+                        &diagonal_inertia_draft_with_precision(1.0_f32, 1.0_f32, 3.0_f32)
+                    ),
+                    Err(
+                        InertiaMatrixRealizabilityValidationError::CovarianceNotPositiveSemiDefinite
+                    ),
+                    "A single precision diagonal violating Ixx + Iyy >= Izz must be rejected"
                 );
             }
 
@@ -922,7 +1021,8 @@ mod tests {
     mod construction {
         use super::{
             VALID_INERTIA_DRAFT, VALID_SPACECRAFT_DRAFT, assert_float_eq, diagonal_inertia_draft,
-            spacecraft_draft_with_area, spacecraft_draft_with_masses,
+            diagonal_inertia_draft_with_precision, spacecraft_draft_with_area,
+            spacecraft_draft_with_masses,
         };
         use core::error::Error as _;
 
@@ -941,15 +1041,15 @@ mod tests {
                 .expect("The valid inertia draft must build an inertia matrix");
             let expected = VALID_INERTIA_DRAFT;
 
-            assert_float_eq(matrix.xx(), expected.xx, "xx field of the built matrix");
-            assert_float_eq(matrix.xy(), expected.xy, "xy field of the built matrix");
-            assert_float_eq(matrix.xz(), expected.xz, "xz field of the built matrix");
-            assert_float_eq(matrix.yx(), expected.yx, "yx field of the built matrix");
-            assert_float_eq(matrix.yy(), expected.yy, "yy field of the built matrix");
-            assert_float_eq(matrix.yz(), expected.yz, "yz field of the built matrix");
-            assert_float_eq(matrix.zx(), expected.zx, "zx field of the built matrix");
-            assert_float_eq(matrix.zy(), expected.zy, "zy field of the built matrix");
-            assert_float_eq(matrix.zz(), expected.zz, "zz field of the built matrix");
+            assert_float_eq(*matrix.xx(), expected.xx, "xx field of the built matrix");
+            assert_float_eq(*matrix.xy(), expected.xy, "xy field of the built matrix");
+            assert_float_eq(*matrix.xz(), expected.xz, "xz field of the built matrix");
+            assert_float_eq(*matrix.yx(), expected.yx, "yx field of the built matrix");
+            assert_float_eq(*matrix.yy(), expected.yy, "yy field of the built matrix");
+            assert_float_eq(*matrix.yz(), expected.yz, "yz field of the built matrix");
+            assert_float_eq(*matrix.zx(), expected.zx, "zx field of the built matrix");
+            assert_float_eq(*matrix.zy(), expected.zy, "zy field of the built matrix");
+            assert_float_eq(*matrix.zz(), expected.zz, "zz field of the built matrix");
         }
 
         #[test]
@@ -961,7 +1061,7 @@ mod tests {
                 InertiaMatrixSerializable::new(draft).err(),
                 Some(InertiaMatrixSerializableValidationError::OutOfRange {
                     field: InertiaMatrixSerializableField::Xx,
-                    range: "]0.0, +inf[",
+                    range: "]Type::zero(), Type::infinity()[",
                 }),
                 "The construction must report the first field error found"
             );
@@ -1039,7 +1139,7 @@ mod tests {
         }
 
         #[test]
-        fn spacecraft_new_accepts_finite_area() {
+        fn spacecraft_new_accepts_finite_area_at_f64_precision() {
             let spacecraft = Spacecraft::new(spacecraft_draft_with_area(25.0_f64))
                 .expect("A finite area must build a spacecraft");
 
@@ -1051,7 +1151,7 @@ mod tests {
         }
 
         #[test]
-        fn spacecraft_new_accepts_finite_area_at_single_precision() {
+        fn spacecraft_new_accepts_finite_area_at_f32_precision() {
             let spacecraft = Spacecraft::<f32>::new(spacecraft_draft_with_area(25.0_f32))
                 .expect("A finite area must build a single precision spacecraft");
 
@@ -1066,7 +1166,7 @@ mod tests {
         }
 
         #[test]
-        fn spacecraft_new_rejects_nan_area() {
+        fn spacecraft_new_rejects_nan_area_at_f64_precision() {
             assert_eq!(
                 Spacecraft::new(spacecraft_draft_with_area(f64::NAN)).err(),
                 Some(SpacecraftValidationError::NotFinite {
@@ -1077,7 +1177,7 @@ mod tests {
         }
 
         #[test]
-        fn spacecraft_new_rejects_infinite_area_at_single_precision() {
+        fn spacecraft_new_rejects_infinite_area_at_f32_precision() {
             assert_eq!(
                 Spacecraft::<f32>::new(spacecraft_draft_with_area(f32::INFINITY)).err(),
                 Some(SpacecraftValidationError::NotFinite {
@@ -1105,7 +1205,7 @@ mod tests {
             ));
 
             assert_float_eq(
-                matrix.xx(),
+                *matrix.xx(),
                 0.0,
                 "xx field built through the unchecked contract",
             );
@@ -1141,6 +1241,31 @@ mod tests {
         }
 
         #[test]
+        fn a_wrapper_variant_reports_the_mirror_error_of_the_nested_field_as_its_source() {
+            let draft = SpacecraftDraft {
+                inertia_matrix: diagonal_inertia_draft(0.0, 3.0, 4.0),
+                ..VALID_SPACECRAFT_DRAFT
+            };
+            let error = Spacecraft::new(draft)
+                .err()
+                .expect("A zero inertia diagonal must be rejected");
+            let source = error
+                .source()
+                .expect("The wrapper variant must report the nested error as its source");
+
+            // The wrapper of the inertia matrix holds the error of the mirror,
+            // because the hand-written bridge of the wrapper borrows the error of its mirror
+            assert_eq!(
+                source.downcast_ref::<InertiaMatrixSerializableValidationError>(),
+                Some(&InertiaMatrixSerializableValidationError::OutOfRange {
+                    field: InertiaMatrixSerializableField::Xx,
+                    range: "]Type::zero(), Type::infinity()[",
+                }),
+                "The source of the spacecraft error must be the error of the inertia mirror"
+            );
+        }
+
+        #[test]
         fn a_field_variant_reports_no_source() {
             let error = Spacecraft::new(spacecraft_draft_with_masses(-1.0, 600.0, 300.0))
                 .err()
@@ -1149,6 +1274,46 @@ mod tests {
             assert!(
                 error.source().is_none(),
                 "A field variant holds no error, so it must report no source"
+            );
+        }
+
+        #[test]
+        fn spacecraft_new_wraps_the_nested_inertia_error_at_f64_precision() {
+            let draft = SpacecraftDraft {
+                inertia_matrix: diagonal_inertia_draft(0.0, 3.0, 4.0),
+                ..VALID_SPACECRAFT_DRAFT
+            };
+
+            assert_eq!(
+                Spacecraft::new(draft).err(),
+                Some(SpacecraftValidationError::InertiaMatrixValidationError(
+                    InertiaMatrixSerializableValidationError::OutOfRange {
+                        field: InertiaMatrixSerializableField::Xx,
+                        range: "]Type::zero(), Type::infinity()[",
+                    }
+                )),
+                "The spacecraft error must wrap the error of the nested inertia matrix"
+            );
+        }
+
+        #[test]
+        fn spacecraft_new_wraps_the_nested_inertia_error_at_f32_precision() {
+            // The shared parameter reaches the nested matrix, so the wrapper variant of the
+            // single precision spacecraft holds the error of the single precision mirror
+            let draft = SpacecraftDraft {
+                inertia_matrix: diagonal_inertia_draft_with_precision(0.0_f32, 3.0_f32, 4.0_f32),
+                ..spacecraft_draft_with_area(12.5_f32)
+            };
+
+            assert_eq!(
+                Spacecraft::new(draft).err(),
+                Some(SpacecraftValidationError::InertiaMatrixValidationError(
+                    InertiaMatrixSerializableValidationError::OutOfRange {
+                        field: InertiaMatrixSerializableField::Xx,
+                        range: "]Type::zero(), Type::infinity()[",
+                    }
+                )),
+                "The single precision spacecraft error must wrap the error of its nested matrix"
             );
         }
     }
@@ -1164,7 +1329,7 @@ mod tests {
 
         /// Build an inertia draft where every entry differs.
         /// The distinct entries expose any transposition.
-        fn distinct_inertia_draft() -> InertiaMatrixSerializableDraft {
+        fn distinct_inertia_draft() -> InertiaMatrixSerializableDraft<f64> {
             InertiaMatrixSerializableDraft {
                 xx: 1.0,
                 xy: 2.0,
@@ -1252,7 +1417,7 @@ mod tests {
                 Ok(()),
                 "A valid xx update must be accepted"
             );
-            assert_float_eq(matrix.xx(), 2.5, "xx field after the accepted update");
+            assert_float_eq(*matrix.xx(), 2.5, "xx field after the accepted update");
         }
 
         #[test]
@@ -1264,21 +1429,21 @@ mod tests {
                 matrix.set_xx(0.0),
                 Err(InertiaMatrixSerializableValidationError::OutOfRange {
                     field: InertiaMatrixSerializableField::Xx,
-                    range: "]0.0, +inf[",
+                    range: "]Type::zero(), Type::infinity()[",
                 }),
                 "An xx update to the excluded lower bound must be rejected"
             );
 
             let expected = VALID_INERTIA_DRAFT;
-            assert_float_eq(matrix.xx(), expected.xx, "xx field after the rejection");
-            assert_float_eq(matrix.xy(), expected.xy, "xy field after the rejection");
-            assert_float_eq(matrix.xz(), expected.xz, "xz field after the rejection");
-            assert_float_eq(matrix.yx(), expected.yx, "yx field after the rejection");
-            assert_float_eq(matrix.yy(), expected.yy, "yy field after the rejection");
-            assert_float_eq(matrix.yz(), expected.yz, "yz field after the rejection");
-            assert_float_eq(matrix.zx(), expected.zx, "zx field after the rejection");
-            assert_float_eq(matrix.zy(), expected.zy, "zy field after the rejection");
-            assert_float_eq(matrix.zz(), expected.zz, "zz field after the rejection");
+            assert_float_eq(*matrix.xx(), expected.xx, "xx field after the rejection");
+            assert_float_eq(*matrix.xy(), expected.xy, "xy field after the rejection");
+            assert_float_eq(*matrix.xz(), expected.xz, "xz field after the rejection");
+            assert_float_eq(*matrix.yx(), expected.yx, "yx field after the rejection");
+            assert_float_eq(*matrix.yy(), expected.yy, "yy field after the rejection");
+            assert_float_eq(*matrix.yz(), expected.yz, "yz field after the rejection");
+            assert_float_eq(*matrix.zx(), expected.zx, "zx field after the rejection");
+            assert_float_eq(*matrix.zy(), expected.zy, "zy field after the rejection");
+            assert_float_eq(*matrix.zz(), expected.zz, "zz field after the rejection");
         }
 
         #[test]
@@ -1295,7 +1460,7 @@ mod tests {
                 ),
                 "A zz update breaking the triangle inequalities must be rejected"
             );
-            assert_float_eq(matrix.zz(), 2.0, "zz field after the rejection");
+            assert_float_eq(*matrix.zz(), 2.0, "zz field after the rejection");
         }
 
         #[test]
@@ -1494,7 +1659,7 @@ mod tests {
             let restored_matrix = InertiaMatrixSerializable::from_draft(matrix.to_draft())
                 .expect("The draft of a valid inertia matrix must validate again");
             assert_float_eq(
-                restored_matrix.xx(),
+                *restored_matrix.xx(),
                 2.0,
                 "xx field of the round tripped matrix",
             );
@@ -1524,7 +1689,7 @@ mod tests {
     /// Serde wire format and deserialization.
     mod serde_integration {
         use super::model::{CelestialBodyKind, InertiaMatrix, ShadowFraction, Spacecraft};
-        use super::{VALID_SPACECRAFT_DRAFT, assert_float_eq};
+        use super::{VALID_SPACECRAFT_DRAFT, assert_float_eq, spacecraft_draft_with_area};
 
         /// Build the JSON document of a spacecraft with the given masses and inertia `inertia_xx`.
         /// Every other entry matches the standard valid spacecraft draft.
@@ -1619,7 +1784,7 @@ mod tests {
         }
 
         #[test]
-        fn spacecraft_serialize_deserialize_round_trip() {
+        fn spacecraft_serialize_deserialize_round_trip_at_f64_precision() {
             let spacecraft = Spacecraft::new(VALID_SPACECRAFT_DRAFT)
                 .expect("The valid spacecraft draft must build a spacecraft");
             let document = serde_json::to_string(&spacecraft)
@@ -1643,11 +1808,50 @@ mod tests {
         }
 
         #[test]
-        fn spacecraft_deserialize_rejects_invalid_nested_inertia() {
+        fn spacecraft_serialize_deserialize_round_trip_at_f32_precision() {
+            let spacecraft = Spacecraft::new(spacecraft_draft_with_area(12.5_f32))
+                .expect("The valid single precision spacecraft draft must build a spacecraft");
+            let document = serde_json::to_string(&spacecraft)
+                .expect("A valid single precision spacecraft must serialize to a document");
+            let restored = serde_json::from_str::<Spacecraft<f32>>(&document)
+                .expect("The serialized document must deserialize back");
+
+            // The helper of the double precision cannot compare a single precision value,
+            // so the checks read the bit patterns of the values directly
+            assert_eq!(
+                restored.area().to_bits(),
+                12.5_f32.to_bits(),
+                "The round tripped area must be exactly 12.5 but was {}",
+                restored.area()
+            );
+            assert_eq!(
+                restored.inertia_matrix().matrix().m22.to_bits(),
+                3.0_f32.to_bits(),
+                "The round tripped yy entry must be exactly 3.0 but was {}",
+                restored.inertia_matrix().matrix().m22
+            );
+        }
+
+        #[test]
+        fn spacecraft_deserialize_rejects_invalid_nested_inertia_at_f64_precision() {
             let document = spacecraft_json_value(1000.0, 600.0, 300.0, 0.0).to_string();
             let message = deserialization_error_message(
                 serde_json::from_str::<Spacecraft>(&document),
                 "spacecraft document holding a zero inertia diagonal",
+            );
+
+            assert!(
+                message.contains("range"),
+                "The rejection message must mention the range but was {message}"
+            );
+        }
+
+        #[test]
+        fn spacecraft_deserialize_rejects_invalid_nested_inertia_at_f32_precision() {
+            let document = spacecraft_json_value(1000.0, 600.0, 300.0, 0.0).to_string();
+            let message = deserialization_error_message(
+                serde_json::from_str::<Spacecraft<f32>>(&document),
+                "single precision spacecraft document holding a zero inertia diagonal",
             );
 
             assert!(
@@ -1716,7 +1920,7 @@ mod tests {
             })
             .to_string();
             let message = deserialization_error_message(
-                serde_json::from_str::<InertiaMatrix>(&document),
+                serde_json::from_str::<InertiaMatrix<f64>>(&document),
                 "asymmetric inertia document",
             );
 

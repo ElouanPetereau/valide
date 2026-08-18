@@ -1,0 +1,5 @@
+error: the generated error enum must carry every generic parameter or none, and this parameter appears in no nested field type and in no final validation error type
+  --> tests/ui/fail/generic_error_subset.rs:10:24
+   |
+10 | struct Wrapper<Number, Other> {
+   |                        ^^^^^

@@ -8,6 +8,7 @@ valide_derive = { path = "../valide_derive", default-features = false, optional 
 
 [dev-dependencies]
 nalgebra = { version = "0.34.0", default-features = false, features = ["std"] }
+num-traits = { version = "0.2.19", default-features = false, features = ["std"] }
 serde = {
   version = "1.0.214",
   default-features = false,

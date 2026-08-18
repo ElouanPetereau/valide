@@ -4,6 +4,8 @@
 //! It produces every diagnostic of the two derives.
 //! The diagnostics accumulate and point at the offending tokens.
 
+use core::ptr;
+
 use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
 use quote::{ToTokens as _, quote};
 use syn::{
@@ -66,9 +68,8 @@ const FINAL_VALIDATION_MESSAGE: &str =
 /// Message that describes the payload of a `draft_attr` attribute.
 const DRAFT_ATTR_MESSAGE: &str =
     "#[draft_attr(...)] takes the attribute to re-emit on the generated draft as its payload";
-/// Message of the rejection of a generic parameter that the generated error enum would carry.
-const ERROR_PAYLOAD_PARAMETER_MESSAGE: &str =
-    "a generic parameter that reaches an error payload is not yet supported";
+/// Message of the rejection of a generic parameter that the generated error enum cannot carry.
+const ERROR_PAYLOAD_SUBSET_MESSAGE: &str = "the generated error enum must carry every generic parameter or none, and this parameter appears in no nested field type and in no final validation error type";
 
 /// Parse the given `derive_input` into the intermediate representation of a validated type.
 /// Return every grammar error found. A single compilation reports all of them.
@@ -109,13 +110,8 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
     }
     let used_parameters =
         used_error_parameters(&derive_input.generics, &fields, &final_validations);
-    // The generated error enum stays free of every generic parameter for now,
-    // so the first parameter that reaches a payload carries the rejection
-    if let Some(&parameter) = used_parameters.first() {
-        errors.push(Error::new_spanned(
-            parameter,
-            ERROR_PAYLOAD_PARAMETER_MESSAGE,
-        ));
+    if let Err(error) = check_error_parameters(&derive_input.generics, &used_parameters) {
+        errors.push(error);
     }
     accumulated(errors)?;
 
@@ -124,8 +120,8 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
     let draft_ident = naming::suffixed_ident(&ident, naming::DRAFT_SUFFIX);
     let field_enum_ident = naming::suffixed_ident(&ident, naming::FIELD_ENUM_SUFFIX);
     let error_ident = naming::suffixed_ident(&ident, naming::VALIDATION_ERROR_SUFFIX);
-    // A parameter that reaches no error payload would make the generated enum carry an unused parameter,
-    // so the enum only becomes generic once the scan finds one
+    // The check above rejected every proper subset,
+    // so a single parameter that reaches an error payload means that they all reach one
     let error_enum_is_generic = !used_parameters.is_empty();
 
     Ok(TypeIntermediateRepresentation {
@@ -556,6 +552,30 @@ fn parameter_name(parameter: &GenericParam) -> &Ident {
     }
 }
 
+/// Check that the generated error enum of a validated type carries either every parameter of `generics` or none.
+/// The `used_parameters` are the parameters that the scan found in an error payload.
+/// A parameter that reaches no payload while another parameter reaches one would become an unused parameter of the generated enum,
+/// which the caller of the derive cannot fix, so the derive rejects it here.
+/// Each unused parameter carries its own error, so a single compilation reports all of them.
+fn check_error_parameters(generics: &Generics, used_parameters: &[&GenericParam]) -> Result<()> {
+    if used_parameters.is_empty() {
+        return Ok(());
+    }
+    // The scan borrows the parameters of the same generics, so the address of a parameter identifies it
+    let errors: Vec<Error> = generics
+        .params
+        .iter()
+        .filter(|parameter| {
+            !used_parameters
+                .iter()
+                .any(|&used_parameter| ptr::eq(used_parameter, *parameter))
+        })
+        .map(|parameter| Error::new_spanned(parameter, ERROR_PAYLOAD_SUBSET_MESSAGE))
+        .collect();
+
+    accumulated(errors)
+}
+
 /// Check that the field enum variants generated for `fields` are all distinct.
 fn check_field_variants(fields: &[FieldIntermediateRepresentation]) -> Result<()> {
     let variants: Vec<Ident> = fields
@@ -619,7 +639,7 @@ mod tests {
         FieldIntermediateRepresentation, FinalValidation, Rule,
     };
 
-    use super::{parameter_name, parse, used_error_parameters};
+    use super::{ERROR_PAYLOAD_SUBSET_MESSAGE, parameter_name, parse, used_error_parameters};
 
     /// Build an identifier from `name`, with the call site span.
     fn ident(name: &str) -> Ident {
@@ -764,18 +784,42 @@ mod tests {
     }
 
     #[test]
-    fn a_parameter_that_reaches_an_error_payload_is_rejected() {
+    fn every_parameter_that_reaches_an_error_payload_makes_the_error_enum_generic() {
         let derive_input: DeriveInput =
             parse_str("struct Wrapper<Number> { #[validate(nested)] inner: Inner<Number> }")
                 .expect("the tested derive input must parse");
 
-        let Err(error) = parse(&derive_input) else {
-            panic!("a parameter that reaches an error payload must be rejected");
-        };
+        let intermediate_representation = parse(&derive_input)
+            .expect("a parameter that reaches an error payload must be accepted");
 
         assert!(
-            error.to_string().contains("not yet supported"),
-            "The rejection must tell that the case is not supported yet, and it says: {error}"
+            intermediate_representation.error_enum_is_generic,
+            "A parameter that reaches an error payload must make the error enum generic"
+        );
+    }
+
+    #[test]
+    fn a_proper_subset_of_the_parameters_is_rejected_at_each_unused_parameter() {
+        let derive_input: DeriveInput = parse_str(
+            "struct Wrapper<Number, Other, Extra> { #[validate(nested)] inner: Inner<Number> }",
+        )
+        .expect("the tested derive input must parse");
+
+        let Err(error) = parse(&derive_input) else {
+            panic!("a proper subset of the parameters must be rejected");
+        };
+        let messages: Vec<String> = error
+            .into_iter()
+            .map(|single_error| single_error.to_string())
+            .collect();
+
+        assert_eq!(
+            messages,
+            vec![
+                ERROR_PAYLOAD_SUBSET_MESSAGE.to_owned(),
+                ERROR_PAYLOAD_SUBSET_MESSAGE.to_owned(),
+            ],
+            "Each parameter that reaches no error payload must carry its own rejection"
         );
     }
 }

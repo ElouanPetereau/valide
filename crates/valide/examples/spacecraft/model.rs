@@ -2,7 +2,8 @@
 
 use core::ops::Bound;
 
-use nalgebra::{ComplexField, Matrix3};
+use nalgebra::{ComplexField, Matrix3, RealField};
+use num_traits::Float;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use valide::{Patch, Validate};
 
@@ -19,30 +20,30 @@ pub enum CelestialBodyKind {
 /// Inertia matrix of a body.
 #[repr(transparent)]
 #[derive(Clone, PartialEq)]
-pub struct InertiaMatrix(Matrix3<f64>);
+pub struct InertiaMatrix<Type: RealField + Float>(Matrix3<Type>);
 
-impl InertiaMatrix {
+impl<Type: RealField + Float> InertiaMatrix<Type> {
     /// Retrieve the wrapped matrix.
-    pub fn matrix(&self) -> &Matrix3<f64> {
+    pub fn matrix(&self) -> &Matrix3<Type> {
         &self.0
     }
 }
 
-impl Serialize for InertiaMatrix {
+impl<Type: RealField + Float + Serialize> Serialize for InertiaMatrix<Type> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         InertiaMatrixSerializable::from(self.clone()).serialize(serializer)
     }
 }
 
-impl<'de> Deserialize<'de> for InertiaMatrix {
+impl<'de, Type: RealField + Float + Deserialize<'de>> Deserialize<'de> for InertiaMatrix<Type> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = InertiaMatrixSerializable::deserialize(deserializer)?;
         Ok(Self::from(value))
     }
 }
 
-impl From<InertiaMatrixSerializable> for InertiaMatrix {
-    fn from(value: InertiaMatrixSerializable) -> Self {
+impl<Type: RealField + Float> From<InertiaMatrixSerializable<Type>> for InertiaMatrix<Type> {
+    fn from(value: InertiaMatrixSerializable<Type>) -> Self {
         Self(Matrix3::new(
             value.xx, value.xy, value.xz, value.yx, value.yy, value.yz, value.zx, value.zy,
             value.zz,
@@ -50,8 +51,8 @@ impl From<InertiaMatrixSerializable> for InertiaMatrix {
     }
 }
 
-impl From<InertiaMatrix> for InertiaMatrixSerializable {
-    fn from(value: InertiaMatrix) -> Self {
+impl<Type: RealField + Float> From<InertiaMatrix<Type>> for InertiaMatrixSerializable<Type> {
+    fn from(value: InertiaMatrix<Type>) -> Self {
         Self {
             xx: value.0.m11,
             xy: value.0.m12,
@@ -68,8 +69,8 @@ impl From<InertiaMatrix> for InertiaMatrixSerializable {
 
 // Hand-written bridge declaring the draft type and conversion path of the wrapper,
 // written once so the generated code never has to know them
-impl Validate for InertiaMatrix {
-    type Draft = InertiaMatrixSerializableDraft;
+impl<Type: RealField + Float> Validate for InertiaMatrix<Type> {
+    type Draft = InertiaMatrixSerializableDraft<Type>;
     type Error = InertiaMatrixSerializableValidationError;
 
     fn validate(draft: &Self::Draft) -> Result<(), Self::Error> {
@@ -81,7 +82,7 @@ impl Validate for InertiaMatrix {
     }
 }
 
-impl Patch for InertiaMatrix {
+impl<Type: RealField + Float> Patch for InertiaMatrix<Type> {
     fn to_draft(&self) -> Self::Draft {
         InertiaMatrixSerializable::from(self.clone()).into()
     }
@@ -89,36 +90,36 @@ impl Patch for InertiaMatrix {
 
 /// Serde representation of an [`InertiaMatrix`].
 #[derive(Clone, Serialize, Deserialize, valide_derive::Validate, valide_derive::Patch)]
-#[serde(try_from = "InertiaMatrixSerializableDraft")]
+#[serde(try_from = "InertiaMatrixSerializableDraft<Type>")]
 #[final_validation(validate_realizability, error = InertiaMatrixRealizabilityValidationError)]
-pub struct InertiaMatrixSerializable {
+pub struct InertiaMatrixSerializable<Type: RealField + Float> {
     /// Ixx.
-    #[validate(range(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
-    xx: f64,
+    #[validate(range(Bound::Excluded(Type::zero()), Bound::Excluded(Type::infinity())))]
+    xx: Type,
     /// Ixy.
     #[validate(finite)]
-    xy: f64,
+    xy: Type,
     /// Ixz.
     #[validate(finite)]
-    xz: f64,
+    xz: Type,
     /// Iyx.
     #[validate(finite)]
-    yx: f64,
+    yx: Type,
     /// Iyy.
-    #[validate(range(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
-    yy: f64,
+    #[validate(range(Bound::Excluded(Type::zero()), Bound::Excluded(Type::infinity())))]
+    yy: Type,
     /// Iyz.
     #[validate(finite)]
-    yz: f64,
+    yz: Type,
     /// Izx.
     #[validate(finite)]
-    zx: f64,
+    zx: Type,
     /// Izy.
     #[validate(finite)]
-    zy: f64,
+    zy: Type,
     /// Izz.
-    #[validate(range(Bound::Excluded(0.0_f64), Bound::Excluded(f64::INFINITY)))]
-    zz: f64,
+    #[validate(range(Bound::Excluded(Type::zero()), Bound::Excluded(Type::infinity())))]
+    zz: Type,
 }
 
 /// Error type of the [`InertiaMatrixSerializable::validate_realizability`] validation.
@@ -140,7 +141,7 @@ pub enum InertiaMatrixRealizabilityValidationError {
     clippy::multiple_inherent_impl,
     reason = "derives generate some part of the struct"
 )]
-impl InertiaMatrixSerializable {
+impl<Type: RealField + Float> InertiaMatrixSerializable<Type> {
     /// Absolute tolerance on the off-diagonal mismatch of the symmetry check.
     pub const SYMMETRY_TOLERANCE: f64 = 1e-9;
 
@@ -153,25 +154,35 @@ impl InertiaMatrixSerializable {
     /// Check that it is a physically realizable mass distribution within
     /// [`Self::REALIZABILITY_TOLERANCE`].
     /// The entries must be finite, which the field validators enforce.
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "All panics are guaranteed to never happen"
+    )]
     pub fn validate_realizability(
-        draft: &InertiaMatrixSerializableDraft,
+        draft: &InertiaMatrixSerializableDraft<Type>,
     ) -> Result<(), InertiaMatrixRealizabilityValidationError> {
+        let symmetry_tolerance: Type = Type::from(Self::SYMMETRY_TOLERANCE)
+            .expect("the symmetry tolerance is guaranteed to fit in any Float");
+        let realizability_tolerance: Type = Type::from(Self::REALIZABILITY_TOLERANCE)
+            .expect("the realizability tolerance is guaranteed to fit in any Float");
+        let half: Type = Type::from(0.5).expect("0.5 is guaranteed to fit in any Float");
+
         // Check symmetry
-        if !((draft.xy - draft.yx).abs() <= Self::SYMMETRY_TOLERANCE
-            && (draft.xz - draft.zx).abs() <= Self::SYMMETRY_TOLERANCE
-            && (draft.yz - draft.zy).abs() <= Self::SYMMETRY_TOLERANCE)
+        if !(ComplexField::abs(draft.xy - draft.yx) <= symmetry_tolerance
+            && ComplexField::abs(draft.xz - draft.zx) <= symmetry_tolerance
+            && ComplexField::abs(draft.yz - draft.zy) <= symmetry_tolerance)
         {
             return Err(InertiaMatrixRealizabilityValidationError::NotSymmetric);
         }
 
         // Check realizability
-        let half_trace = 0.5 * (draft.xx + draft.yy + draft.zz);
-        if half_trace < -Self::REALIZABILITY_TOLERANCE {
+        let half_trace = half * (draft.xx + draft.yy + draft.zz);
+        if half_trace < -realizability_tolerance {
             return Err(InertiaMatrixRealizabilityValidationError::NegativeTrace);
         }
 
-        // Mass covariance matrix: sigma = half_trace * identity - inertia. Symmetry
-        // was checked above, so only the upper triangle entries are used.
+        // Mass covariance matrix: sigma = half_trace * identity - inertia.
+        // Symmetry was checked above, so only the upper triangle entries are used.
         let s00 = half_trace - draft.xx;
         let s11 = half_trace - draft.yy;
         let s22 = half_trace - draft.zz;
@@ -182,17 +193,16 @@ impl InertiaMatrixSerializable {
         // Sylvester's criterion for positive semi-definiteness: ALL principal minors
         // of sigma must be non-negative (leading minors alone only prove definiteness).
         // Order 1: diagonal entries.
-        let diagonal_ok = s00 >= -Self::REALIZABILITY_TOLERANCE
-            && s11 >= -Self::REALIZABILITY_TOLERANCE
-            && s22 >= -Self::REALIZABILITY_TOLERANCE;
+        let diagonal_ok = s00 >= -realizability_tolerance
+            && s11 >= -realizability_tolerance
+            && s22 >= -realizability_tolerance;
 
         // The qualified ComplexField calls make the fused multiply add follow the selected
-        // math feature, the inherent f64 method would always resolve to the native one
+        // math feature, the inherent Float method would always resolve to the native one
         // Order 2: the three 2x2 principal minors.
-        let minor_2_ok = ComplexField::mul_add(s01, -s01, s00 * s11)
-            >= -Self::REALIZABILITY_TOLERANCE
-            && ComplexField::mul_add(s02, -s02, s00 * s22) >= -Self::REALIZABILITY_TOLERANCE
-            && ComplexField::mul_add(s12, -s12, s11 * s22) >= -Self::REALIZABILITY_TOLERANCE;
+        let minor_2_ok = ComplexField::mul_add(s01, -s01, s00 * s11) >= -realizability_tolerance
+            && ComplexField::mul_add(s02, -s02, s00 * s22) >= -realizability_tolerance
+            && ComplexField::mul_add(s12, -s12, s11 * s22) >= -realizability_tolerance;
 
         // Order 3: the determinant.
         let determinant = ComplexField::mul_add(
@@ -204,7 +214,7 @@ impl InertiaMatrixSerializable {
                 s00 * ComplexField::mul_add(s12, -s12, s11 * s22),
             ),
         );
-        let determinant_ok = determinant >= -Self::REALIZABILITY_TOLERANCE;
+        let determinant_ok = determinant >= -realizability_tolerance;
 
         if !diagonal_ok || !minor_2_ok || !determinant_ok {
             return Err(
@@ -229,9 +239,9 @@ pub struct ShadowFraction(#[validate(range(0.0..=1.0))] f64);
 #[derive(
     Clone, PartialEq, Serialize, Deserialize, valide_derive::Validate, valide_derive::Patch,
 )]
-#[serde(try_from = "SpacecraftDraft<Area>")]
+#[serde(try_from = "SpacecraftDraft<Type>")]
 #[final_validation(validate_mass_sum, error = SpacecraftMassSumValidationError)]
-pub struct Spacecraft<Area: ComplexField = f64> {
+pub struct Spacecraft<Type: RealField + Float = f64> {
     /// Total spacecraft mass in kilograms (kg).
     #[validate(range(0.0..f64::INFINITY))]
     mass: f64,
@@ -243,10 +253,10 @@ pub struct Spacecraft<Area: ComplexField = f64> {
     sail_mass: f64,
     /// Cross-sectional area of the spacecraft in square meters (m²).
     #[validate(finite)]
-    area: Area,
+    area: Type,
     /// Moment of inertia matrix in the body frame (kg·m²).
     #[validate(nested)]
-    inertia_matrix: InertiaMatrix,
+    inertia_matrix: InertiaMatrix<Type>,
     /// Fraction of sunlight reaching the spacecraft.
     #[validate(nested)]
     sun_shadow_fraction: ShadowFraction,
@@ -271,14 +281,14 @@ pub enum SpacecraftMassSumValidationError {
     clippy::multiple_inherent_impl,
     reason = "derives generate some part of the struct"
 )]
-impl<Area: ComplexField> Spacecraft<Area> {
+impl<Type: RealField + Float> Spacecraft<Type> {
     /// Absolute tolerance for the mass sum check, in kilograms (kg).
     pub const MASS_SUM_TOLERANCE: f64 = 1e-9;
 
     /// Check that the `mass` of the given `draft` is greater than or equal to the sum of
     /// its `bus_mass` and `sail_mass`, within [`Self::MASS_SUM_TOLERANCE`].
     pub fn validate_mass_sum(
-        draft: &SpacecraftDraft<Area>,
+        draft: &SpacecraftDraft<Type>,
     ) -> Result<(), SpacecraftMassSumValidationError> {
         if draft.mass < draft.bus_mass + draft.sail_mass - Self::MASS_SUM_TOLERANCE {
             return Err(SpacecraftMassSumValidationError::MassSmallerThanSum);
