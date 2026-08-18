@@ -49,6 +49,8 @@ pub trait Patch: Validate {
 
 #[cfg(test)]
 mod tests {
+    use nalgebra::ComplexField;
+
     use self::model::{
         CelestialBodyKind, InertiaMatrixSerializableDraft, InertiaMatrixSerializableField,
         InertiaMatrixSerializableValidationError, ShadowFractionDraft, SpacecraftDraft,
@@ -294,9 +296,9 @@ mod tests {
 
         /// Reference physical properties of a spacecraft that the dynamical simulations use.
         #[derive(Clone, Serialize, Deserialize, valide_derive::Validate, valide_derive::Patch)]
-        #[serde(try_from = "SpacecraftDraft")]
+        #[serde(try_from = "SpacecraftDraft<Area>")]
         #[final_validation(validate_mass_sum, error = SpacecraftMassSumValidationError)]
-        pub struct Spacecraft {
+        pub struct Spacecraft<Area: ComplexField = f64> {
             /// Total spacecraft mass in kilograms (kg).
             #[validate(range(0.0..f64::INFINITY))]
             mass: f64,
@@ -306,6 +308,9 @@ mod tests {
             /// Mass of the spacecraft sail in kilograms (kg).
             #[validate(range(0.0..=10_000.0))]
             sail_mass: f64,
+            /// Cross-sectional area of the spacecraft in square meters (m²).
+            #[validate(finite)]
+            area: Area,
             /// Moment of inertia matrix in the body frame (kg·m²).
             #[validate(nested)]
             inertia_matrix: InertiaMatrix,
@@ -333,14 +338,14 @@ mod tests {
             clippy::multiple_inherent_impl,
             reason = "derives generate some part of the struct"
         )]
-        impl Spacecraft {
+        impl<Area: ComplexField> Spacecraft<Area> {
             /// Absolute tolerance for the mass sum check, in kilograms (kg).
             pub const MASS_SUM_TOLERANCE: f64 = 1e-9;
 
             /// Check that the `mass` of the given `draft` is greater than or equal to the sum of
             /// its `bus_mass` and `sail_mass`, within [`Self::MASS_SUM_TOLERANCE`].
             pub fn validate_mass_sum(
-                draft: &SpacecraftDraft,
+                draft: &SpacecraftDraft<Area>,
             ) -> Result<(), SpacecraftMassSumValidationError> {
                 if draft.mass < draft.bus_mass + draft.sail_mass - Self::MASS_SUM_TOLERANCE {
                     return Err(SpacecraftMassSumValidationError::MassSmallerThanSum);
@@ -355,7 +360,8 @@ mod tests {
     const VALID_INERTIA_DRAFT: InertiaMatrixSerializableDraft =
         diagonal_inertia_draft(2.0, 3.0, 4.0);
 
-    /// Valid spacecraft draft of 1000.0 kg with a 600.0 kg bus and a 300.0 kg sail.
+    /// Valid spacecraft draft of 1000.0 kg with a 600.0 kg bus, a 300.0 kg sail
+    /// and a 12.5 m2 area.
     const VALID_SPACECRAFT_DRAFT: SpacecraftDraft =
         spacecraft_draft_with_masses(1000.0, 600.0, 300.0);
 
@@ -455,6 +461,23 @@ mod tests {
             mass,
             bus_mass,
             sail_mass,
+            area: 12.5,
+            inertia_matrix: VALID_INERTIA_DRAFT,
+            sun_shadow_fraction: ShadowFractionDraft(0.5),
+            primary_orbited_body: CelestialBodyKind::Earth,
+        }
+    }
+
+    /// Build an otherwise valid spacecraft draft with the given `area` in square meters (m2).
+    /// The area carries the precision of the returned draft, so the function reaches every
+    /// precision that the parameter of the spacecraft accepts.
+    /// Every other field matches the standard valid spacecraft draft.
+    fn spacecraft_draft_with_area<Area: ComplexField>(area: Area) -> SpacecraftDraft<Area> {
+        SpacecraftDraft {
+            mass: 1000.0,
+            bus_mass: 600.0,
+            sail_mass: 300.0,
+            area,
             inertia_matrix: VALID_INERTIA_DRAFT,
             sun_shadow_fraction: ShadowFractionDraft(0.5),
             primary_orbited_body: CelestialBodyKind::Earth,
@@ -1186,7 +1209,7 @@ mod tests {
     mod construction {
         use super::{
             VALID_INERTIA_DRAFT, VALID_SPACECRAFT_DRAFT, assert_float_eq, diagonal_inertia_draft,
-            spacecraft_draft_with_masses,
+            spacecraft_draft_with_area, spacecraft_draft_with_masses,
         };
         use core::error::Error as _;
 
@@ -1196,7 +1219,7 @@ mod tests {
             CelestialBodyKind, InertiaMatrixSerializable, InertiaMatrixSerializableField,
             InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
             ShadowFractionField, ShadowFractionValidationError, Spacecraft, SpacecraftDraft,
-            SpacecraftMassSumValidationError, SpacecraftValidationError,
+            SpacecraftField, SpacecraftMassSumValidationError, SpacecraftValidationError,
         };
 
         #[test]
@@ -1267,6 +1290,7 @@ mod tests {
                 300.0,
                 "sail mass of the built spacecraft",
             );
+            assert_float_eq(*spacecraft.area(), 12.5, "area of the built spacecraft");
             assert_float_eq(
                 spacecraft.inertia_matrix().matrix().m11,
                 2.0,
@@ -1299,6 +1323,66 @@ mod tests {
                 )),
                 "A total mass smaller than the sum of the parts must not build"
             );
+        }
+
+        #[test]
+        fn spacecraft_new_accepts_finite_area() {
+            let spacecraft = Spacecraft::new(spacecraft_draft_with_area(25.0_f64))
+                .expect("A finite area must build a spacecraft");
+
+            assert_float_eq(
+                *spacecraft.area(),
+                25.0,
+                "area of the double precision spacecraft",
+            );
+        }
+
+        #[test]
+        fn spacecraft_new_accepts_finite_area_at_single_precision() {
+            let spacecraft = Spacecraft::<f32>::new(spacecraft_draft_with_area(25.0_f32))
+                .expect("A finite area must build a single precision spacecraft");
+
+            // The helper of the double precision cannot compare a single precision area,
+            // so the check reads the bit pattern of the value directly
+            assert_eq!(
+                spacecraft.area().to_bits(),
+                25.0_f32.to_bits(),
+                "The area of the single precision spacecraft must be exactly 25.0 but was {}",
+                spacecraft.area()
+            );
+        }
+
+        #[test]
+        fn spacecraft_new_rejects_nan_area() {
+            assert_eq!(
+                Spacecraft::new(spacecraft_draft_with_area(f64::NAN)).err(),
+                Some(SpacecraftValidationError::NotFinite {
+                    field: SpacecraftField::Area,
+                }),
+                "A not a number area must be rejected at the double precision"
+            );
+        }
+
+        #[test]
+        fn spacecraft_new_rejects_infinite_area_at_single_precision() {
+            assert_eq!(
+                Spacecraft::<f32>::new(spacecraft_draft_with_area(f32::INFINITY)).err(),
+                Some(SpacecraftValidationError::NotFinite {
+                    field: SpacecraftField::Area,
+                }),
+                "The positive infinity must be rejected as an area at the single precision"
+            );
+        }
+
+        #[test]
+        fn spacecraft_defaulted_area_parameter_builds() {
+            // The two bare names carry the default of the parameter,
+            // so they must name the double precision spacecraft and its draft
+            let draft: SpacecraftDraft = VALID_SPACECRAFT_DRAFT;
+            let spacecraft: Spacecraft =
+                Spacecraft::new(draft).expect("The valid spacecraft draft must build a spacecraft");
+
+            assert_float_eq(*spacecraft.area(), 12.5, "area of the defaulted spacecraft");
         }
 
         #[test]
@@ -1441,7 +1525,7 @@ mod tests {
             CelestialBodyKind, InertiaMatrix, InertiaMatrixRealizabilityValidationError,
             InertiaMatrixSerializable, InertiaMatrixSerializableField,
             InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
-            ShadowFractionField, ShadowFractionValidationError, Spacecraft,
+            ShadowFractionField, ShadowFractionValidationError, Spacecraft, SpacecraftField,
             SpacecraftMassSumValidationError, SpacecraftValidationError,
         };
 
@@ -1591,6 +1675,34 @@ mod tests {
         }
 
         #[test]
+        fn spacecraft_set_area_valid() {
+            let mut spacecraft = Spacecraft::new(VALID_SPACECRAFT_DRAFT)
+                .expect("The valid spacecraft draft must build a spacecraft");
+
+            assert_eq!(
+                spacecraft.set_area(30.0),
+                Ok(()),
+                "A finite area update must be accepted"
+            );
+            assert_float_eq(*spacecraft.area(), 30.0, "area after the accepted update");
+        }
+
+        #[test]
+        fn spacecraft_set_area_rejects_nan_and_leaves_state_unchanged() {
+            let mut spacecraft = Spacecraft::new(VALID_SPACECRAFT_DRAFT)
+                .expect("The valid spacecraft draft must build a spacecraft");
+
+            assert_eq!(
+                spacecraft.set_area(f64::NAN),
+                Err(SpacecraftValidationError::NotFinite {
+                    field: SpacecraftField::Area,
+                }),
+                "A not a number area update must be rejected"
+            );
+            assert_float_eq(*spacecraft.area(), 12.5, "area after the rejection");
+        }
+
+        #[test]
         fn spacecraft_set_inertia_matrix_valid() {
             let mut spacecraft = Spacecraft::new(VALID_SPACECRAFT_DRAFT)
                 .expect("The valid spacecraft draft must build a spacecraft");
@@ -1713,6 +1825,7 @@ mod tests {
                 "mass": mass,
                 "bus_mass": bus_mass,
                 "sail_mass": sail_mass,
+                "area": 12.5,
                 "inertia_matrix": {
                     "xx": inertia_xx,
                     "xy": 0.0,
