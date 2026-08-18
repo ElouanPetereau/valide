@@ -102,8 +102,8 @@ a new field never escapes the validation by accident.
   Use this form for a range that the range syntax cannot spell, such as an excluded lower bound.
   The generated check resolves `Bound` in the module of the validated type, which must import it.
 - `#[validate(finite)]` accepts a floating point value that is neither infinite nor a not a
-  number value. The marker is meant for `f32` and `f64`, because the generated check calls the
-  inherent `is_finite` method of the field type.
+  number value. The marker is meant for `f32` and `f64`. The generated check calls the
+  `is_finite` method of the field type, which a trait bound can provide for a generic field.
 - `#[validate(nested)]` delegates the validation to the type of the field, which must implement
   `Validate`. The draft of the type holds the draft of the field.
 - `#[validate(skip)]` excludes the field from every field validation, so the field gets no
@@ -145,7 +145,7 @@ variant is `Value`.
 
 ## Limitations
 
-- A validated type must be a struct. An enum, a union and a generic type are rejected with a clear error.
+- A validated type must be a struct. An enum and a union are rejected with a clear error.
 - A tuple struct must have exactly one field.
 - The by value getter uses the written token of the field type, so an alias to a primitive gets a getter that returns a reference.
 - `Validate::from_draft_unchecked` skips the validation. It exists for the generated code.
