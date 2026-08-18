@@ -154,9 +154,12 @@ impl<Type: RealField + Float> InertiaMatrixSerializable<Type> {
     /// Check that it is a physically realizable mass distribution within
     /// [`Self::REALIZABILITY_TOLERANCE`].
     /// The entries must be finite, which the field validators enforce.
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "All panics are guaranteed to never happen"
+    #[cfg_attr(
+        not(test), // The lint only fires in the example build where the function is publicly reachable, not when the file is included as a private test module.
+        expect(
+            clippy::missing_panics_doc,
+            reason = "All panics are guaranteed to never happen"
+        )
     )]
     pub fn validate_realizability(
         draft: &InertiaMatrixSerializableDraft<Type>,
