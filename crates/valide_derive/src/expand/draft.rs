@@ -20,6 +20,10 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     let vis = &intermediate_representation.vis;
     let type_ident = &intermediate_representation.ident;
     let draft_ident = &intermediate_representation.draft_ident;
+    // The declaration carries the generics of the validated type with their bounds and their defaults,
+    // which the split spelling of an implementation drops
+    let generics = &intermediate_representation.generics;
+    let (_, _, where_clause) = intermediate_representation.generics.split_for_impl();
     let struct_doc = doc(&format!(
         "Unvalidated draft of {} [`{type_ident}`].",
         article(&type_ident.to_string())
@@ -57,7 +61,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
 
             quote! {
                 #attributes
-                #vis struct #draft_ident {
+                #vis struct #draft_ident #generics #where_clause {
                     #(#fields)*
                 }
             }
@@ -70,9 +74,10 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
                 quote! { #field_attributes pub #ty }
             });
 
+            // The where clause of a tuple struct comes after the fields and before the semicolon
             quote! {
                 #attributes
-                #vis struct #draft_ident(#(#fields),*);
+                #vis struct #draft_ident #generics (#(#fields),*) #where_clause;
             }
         }
     }

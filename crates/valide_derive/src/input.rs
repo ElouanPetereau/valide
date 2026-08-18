@@ -4,11 +4,12 @@
 //! It produces every diagnostic of the two derives.
 //! The diagnostics accumulate and point at the offending tokens.
 
-use proc_macro2::{Span, TokenStream, TokenTree};
+use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
 use quote::{ToTokens as _, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Error, Expr, Field, Fields, Ident, Index, Member, Meta, MetaList,
-    Path, Result, Token, parse::ParseStream, punctuated::Punctuated, spanned::Spanned as _,
+    Attribute, Data, DeriveInput, Error, Expr, Field, Fields, GenericParam, Generics, Ident, Index,
+    Member, Meta, MetaList, Path, Result, Token, parse::ParseStream, punctuated::Punctuated,
+    spanned::Spanned as _,
 };
 
 use crate::{
@@ -65,6 +66,9 @@ const FINAL_VALIDATION_MESSAGE: &str =
 /// Message that describes the payload of a `draft_attr` attribute.
 const DRAFT_ATTR_MESSAGE: &str =
     "#[draft_attr(...)] takes the attribute to re-emit on the generated draft as its payload";
+/// Message of the rejection of a generic parameter that the generated error enum would carry.
+const ERROR_PAYLOAD_PARAMETER_MESSAGE: &str =
+    "a generic parameter that reaches an error payload is not yet supported";
 
 /// Parse the given `derive_input` into the intermediate representation of a validated type.
 /// Return every grammar error found. A single compilation reports all of them.
@@ -103,19 +107,35 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
     if let Err(error) = check_field_variants(&fields) {
         errors.push(error);
     }
+    let used_parameters =
+        used_error_parameters(&derive_input.generics, &fields, &final_validations);
+    // The generated error enum stays free of every generic parameter for now,
+    // so the first parameter that reaches a payload carries the rejection
+    if let Some(&parameter) = used_parameters.first() {
+        errors.push(Error::new_spanned(
+            parameter,
+            ERROR_PAYLOAD_PARAMETER_MESSAGE,
+        ));
+    }
     accumulated(errors)?;
 
     let ident = derive_input.ident.clone();
+    let generics = derive_input.generics.clone();
     let draft_ident = naming::suffixed_ident(&ident, naming::DRAFT_SUFFIX);
     let field_enum_ident = naming::suffixed_ident(&ident, naming::FIELD_ENUM_SUFFIX);
     let error_ident = naming::suffixed_ident(&ident, naming::VALIDATION_ERROR_SUFFIX);
+    // A parameter that reaches no error payload would make the generated enum carry an unused parameter,
+    // so the enum only becomes generic once the scan finds one
+    let error_enum_is_generic = !used_parameters.is_empty();
 
     Ok(TypeIntermediateRepresentation {
         ident,
         vis: derive_input.vis.clone(),
+        generics,
         draft_ident,
         field_enum_ident,
         error_ident,
+        error_enum_is_generic,
         shape,
         fields,
         final_validations,
@@ -139,12 +159,6 @@ fn accumulated(errors: Vec<Error>) -> Result<()> {
 
 /// Check that the given `derive_input` is a type the derives support.
 fn require_supported_type(derive_input: &DeriveInput) -> Result<()> {
-    if !derive_input.generics.params.is_empty() || derive_input.generics.where_clause.is_some() {
-        return Err(Error::new_spanned(
-            &derive_input.generics,
-            "a validated type must not be generic",
-        ));
-    }
     for attribute in &derive_input.attrs {
         if attribute.path().is_ident(VALIDATE_ATTRIBUTE) {
             return Err(Error::new_spanned(
@@ -444,6 +458,104 @@ fn has_serde_try_from(attributes: &[Attribute]) -> bool {
     })
 }
 
+/// Return the generic parameters of `generics` that reach an error payload of `fields` or of `final_validations`.
+/// The returned parameters keep their declaration order.
+/// An empty result means that the generated error enum stays free of every parameter.
+fn used_error_parameters<'generics>(
+    generics: &'generics Generics,
+    fields: &[FieldIntermediateRepresentation],
+    final_validations: &[FinalValidation],
+) -> Vec<&'generics GenericParam> {
+    generics
+        .params
+        .iter()
+        .filter(|&parameter| {
+            error_payload_types(fields, final_validations)
+                .any(|payload_type| names_parameter(payload_type, parameter))
+        })
+        .collect()
+}
+
+/// Return the tokens of every type that reaches the generated error enum of a validated type.
+/// A nested field contributes its declared type, whose own error the enum wraps.
+/// A final validation contributes the error type that it returns.
+fn error_payload_types(
+    fields: &[FieldIntermediateRepresentation],
+    final_validations: &[FinalValidation],
+) -> impl Iterator<Item = TokenStream> {
+    let nested_types = fields
+        .iter()
+        .filter(|field| matches!(field.rule, Rule::Nested { .. }))
+        .map(|field| field.ty.to_token_stream());
+    let final_validation_error_types = final_validations
+        .iter()
+        .map(|final_validation| final_validation.error_ty.to_token_stream());
+
+    nested_types.chain(final_validation_error_types)
+}
+
+/// Token that the parameter walk read just before the token it reads now.
+/// The walk needs it to tell a lifetime from a type and to skip the segment of a foreign path.
+#[derive(Clone, Copy)]
+enum PrecedingToken {
+    /// A token that changes the meaning of the next token in no way.
+    Other,
+    /// A joint colon, which becomes a path separator once a second colon follows it.
+    Colon,
+    /// A path separator, which makes the next identifier a segment of a foreign path.
+    PathSeparator,
+    /// The quote of a lifetime, whose name is the next identifier.
+    Quote,
+}
+
+/// Whether the given `tokens` name the generic `parameter`.
+/// A lifetime is a quote followed by its name, so the walk reads the two tokens together.
+/// An identifier that follows a path separator names a segment of a foreign path, so it counts for no parameter.
+fn names_parameter(tokens: TokenStream, parameter: &GenericParam) -> bool {
+    let name = parameter_name(parameter);
+    let wants_a_lifetime = matches!(parameter, GenericParam::Lifetime(_));
+    let mut preceding = PrecedingToken::Other;
+    for token in tokens {
+        match token {
+            TokenTree::Group(group) => {
+                if names_parameter(group.stream(), parameter) {
+                    return true;
+                }
+                preceding = PrecedingToken::Other;
+            }
+            TokenTree::Ident(ident) => {
+                let reads_a_lifetime = matches!(preceding, PrecedingToken::Quote);
+                let is_qualified = matches!(preceding, PrecedingToken::PathSeparator);
+                if reads_a_lifetime == wants_a_lifetime && !is_qualified && ident == *name {
+                    return true;
+                }
+                preceding = PrecedingToken::Other;
+            }
+            TokenTree::Punct(punct) => {
+                preceding = match (punct.as_char(), preceding) {
+                    ('\'', _) => PrecedingToken::Quote,
+                    (':', PrecedingToken::Colon) => PrecedingToken::PathSeparator,
+                    (':', _) if matches!(punct.spacing(), Spacing::Joint) => PrecedingToken::Colon,
+                    _ => PrecedingToken::Other,
+                };
+            }
+            TokenTree::Literal(_) => preceding = PrecedingToken::Other,
+        }
+    }
+
+    false
+}
+
+/// Return the name of the given generic `parameter`.
+/// The name of a lifetime parameter comes without its quote.
+fn parameter_name(parameter: &GenericParam) -> &Ident {
+    match parameter {
+        GenericParam::Lifetime(lifetime_parameter) => &lifetime_parameter.lifetime.ident,
+        GenericParam::Type(type_parameter) => &type_parameter.ident,
+        GenericParam::Const(const_parameter) => &const_parameter.ident,
+    }
+}
+
 /// Check that the field enum variants generated for `fields` are all distinct.
 fn check_field_variants(fields: &[FieldIntermediateRepresentation]) -> Result<()> {
     let variants: Vec<Ident> = fields
@@ -496,4 +608,174 @@ fn check_wrapper_variants(
     ));
 
     Err(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::{Ident, Span};
+    use syn::{DeriveInput, Generics, Member, parse_str};
+
+    use crate::intermediate_representation::{
+        FieldIntermediateRepresentation, FinalValidation, Rule,
+    };
+
+    use super::{parameter_name, parse, used_error_parameters};
+
+    /// Build an identifier from `name`, with the call site span.
+    fn ident(name: &str) -> Ident {
+        Ident::new(name, Span::call_site())
+    }
+
+    /// Build a nested field whose declared type is `declared_type`.
+    fn nested_field(declared_type: &str) -> FieldIntermediateRepresentation {
+        FieldIntermediateRepresentation {
+            member: Member::Named(ident("inner")),
+            logical_name: "inner".to_owned(),
+            variant: None,
+            ty: parse_str(declared_type).expect("the tested field type must parse"),
+            docs: Vec::new(),
+            passthrough: Vec::new(),
+            rule: Rule::Nested {
+                wrapper_variant: ident("InnerValidationError"),
+            },
+        }
+    }
+
+    /// Build a final validation whose error type is `error_type`.
+    fn final_validation(error_type: &str) -> FinalValidation {
+        FinalValidation {
+            fn_ident: ident("validate_all"),
+            error_ty: parse_str(error_type).expect("the tested error type must parse"),
+            wrapper_variant: ident("AllValidationError"),
+        }
+    }
+
+    /// Return the names of the parameters of `generics` that reach an error payload of `fields` or of `final_validations`.
+    /// The names come joined by a comma, and an empty text means that the scan found no parameter.
+    fn used_names(
+        generics: &str,
+        fields: &[FieldIntermediateRepresentation],
+        final_validations: &[FinalValidation],
+    ) -> String {
+        let parsed_generics: Generics =
+            parse_str(generics).expect("the tested generics must parse");
+
+        used_error_parameters(&parsed_generics, fields, final_validations)
+            .into_iter()
+            .map(|parameter| parameter_name(parameter).to_string())
+            .collect::<Vec<String>>()
+            .join(", ")
+    }
+
+    #[test]
+    fn no_parameter_reaches_an_error_payload() {
+        let fields = [nested_field("Inner")];
+        let final_validations = [final_validation("MassError")];
+
+        assert!(
+            used_names("<Number>", &fields, &final_validations).is_empty(),
+            "A payload type that names no parameter must leave the result empty"
+        );
+    }
+
+    #[test]
+    fn every_parameter_reaches_an_error_payload() {
+        let fields = [nested_field("Inner<'data, Number, LENGTH>")];
+
+        assert_eq!(
+            used_names("<'data, Number, const LENGTH: usize>", &fields, &[]),
+            "data, Number, LENGTH",
+            "A payload type that names every parameter must give the whole parameter list"
+        );
+    }
+
+    #[test]
+    fn a_proper_subset_of_the_parameters_reaches_an_error_payload() {
+        let fields = [nested_field("Inner<Number>")];
+
+        assert_eq!(
+            used_names("<Number, Other>", &fields, &[]),
+            "Number",
+            "Only the parameter that a payload type names must reach the result"
+        );
+    }
+
+    #[test]
+    fn a_qualified_identifier_names_no_parameter() {
+        let fields = [nested_field("other::T")];
+
+        assert!(
+            used_names("<T>", &fields, &[]).is_empty(),
+            "An identifier that follows a path separator must count for no parameter"
+        );
+    }
+
+    #[test]
+    fn a_lifetime_parameter_reaches_an_error_payload() {
+        let fields = [nested_field("Inner<'data>")];
+
+        assert_eq!(
+            used_names("<'data>", &fields, &[]),
+            "data",
+            "A lifetime that a payload type names must reach the result"
+        );
+    }
+
+    #[test]
+    fn a_const_parameter_reaches_an_error_payload() {
+        let final_validations = [final_validation("MassError<LENGTH>")];
+
+        assert_eq!(
+            used_names("<const LENGTH: usize>", &[], &final_validations),
+            "LENGTH",
+            "A const parameter that an error type names must reach the result"
+        );
+    }
+
+    #[test]
+    fn a_parameter_inside_a_projection_reaches_an_error_payload() {
+        let fields = [nested_field("<Wrapper<T> as Trait>::Assoc")];
+
+        assert_eq!(
+            used_names("<T>", &fields, &[]),
+            "T",
+            "A parameter inside the qualified self type of a projection must reach the result"
+        );
+    }
+
+    #[test]
+    fn a_generic_struct_without_a_bound_is_accepted() {
+        let derive_input: DeriveInput =
+            parse_str("struct Wrapper<Number> { #[validate(skip)] value: Number }")
+                .expect("the tested derive input must parse");
+
+        let intermediate_representation =
+            parse(&derive_input).expect("a generic struct without a bound must be accepted");
+
+        assert_eq!(
+            intermediate_representation.generics.params.len(),
+            1,
+            "The representation must carry the parameter of the validated type"
+        );
+        assert!(
+            !intermediate_representation.error_enum_is_generic,
+            "A parameter that reaches no error payload must leave the error enum free of it"
+        );
+    }
+
+    #[test]
+    fn a_parameter_that_reaches_an_error_payload_is_rejected() {
+        let derive_input: DeriveInput =
+            parse_str("struct Wrapper<Number> { #[validate(nested)] inner: Inner<Number> }")
+                .expect("the tested derive input must parse");
+
+        let Err(error) = parse(&derive_input) else {
+            panic!("a parameter that reaches an error payload must be rejected");
+        };
+
+        assert!(
+            error.to_string().contains("not yet supported"),
+            "The rejection must tell that the case is not supported yet, and it says: {error}"
+        );
+    }
 }

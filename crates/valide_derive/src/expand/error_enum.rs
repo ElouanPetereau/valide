@@ -9,7 +9,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{doc, validate_trait},
+    expand::{doc, error_type, validate_trait},
     intermediate_representation::{Rule, TypeIntermediateRepresentation},
 };
 
@@ -21,6 +21,12 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     let field_enum_ident = &intermediate_representation.field_enum_ident;
     let enum_doc = doc(&format!("Error type of the [`{type_ident}`] validation."));
     let field_doc = doc("The field that failed the validation.");
+    // Only a parameter that reaches a variant may reach the enum,
+    // because an unused parameter of an enum is an error that the caller cannot fix
+    let generic_declaration = generic_declaration(intermediate_representation);
+    let (implementation_header, implementation_where_clause) =
+        implementation_generics(intermediate_representation);
+    let error_enum_type = error_type(intermediate_representation);
 
     let has_range = intermediate_representation
         .fields
@@ -101,25 +107,56 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
         #enum_doc
         // The enum carries no `Eq`, so an error type of a final validation can hold a float
         #[derive(::core::clone::Clone, ::core::cmp::PartialEq, ::core::fmt::Debug)]
-        #vis enum #error_ident {
+        #vis enum #error_ident #generic_declaration {
             #out_of_range
             #not_finite
             #(#final_wrappers)*
             #(#nested_wrappers)*
         }
 
-        impl ::core::fmt::Display for #error_ident {
+        impl #implementation_header ::core::fmt::Display for #error_enum_type
+        #implementation_where_clause
+        {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 #display_body
             }
         }
 
-        impl ::core::error::Error for #error_ident {
+        impl #implementation_header ::core::error::Error for #error_enum_type
+        #implementation_where_clause
+        {
             fn source(&self) -> ::core::option::Option<&(dyn ::core::error::Error + 'static)> {
                 #source_body
             }
         }
     }
+}
+
+/// Return the generics that the declaration of the error enum of `intermediate_representation` carries.
+/// The declaration stays free of every generic parameter while no parameter reaches a variant.
+fn generic_declaration(
+    intermediate_representation: &TypeIntermediateRepresentation,
+) -> Option<TokenStream> {
+    if !intermediate_representation.error_enum_is_generic {
+        return None;
+    }
+    let generics = &intermediate_representation.generics;
+    let (_, _, where_clause) = intermediate_representation.generics.split_for_impl();
+
+    Some(quote! { #generics #where_clause })
+}
+
+/// Return the header generics and the where clause that every implementation of the error enum of `intermediate_representation` carries.
+/// Both stay empty while the error enum is free of every generic parameter.
+fn implementation_generics(
+    intermediate_representation: &TypeIntermediateRepresentation,
+) -> (TokenStream, TokenStream) {
+    if !intermediate_representation.error_enum_is_generic {
+        return (TokenStream::new(), TokenStream::new());
+    }
+    let (impl_generics, _, where_clause) = intermediate_representation.generics.split_for_impl();
+
+    (quote! { #impl_generics }, quote! { #where_clause })
 }
 
 /// Generate the body of the [`Display`](core::fmt::Display) implementation of the error enum of `intermediate_representation`.

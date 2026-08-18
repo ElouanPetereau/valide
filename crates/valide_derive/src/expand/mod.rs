@@ -82,6 +82,35 @@ pub(crate) fn patch_trait() -> TokenStream {
     quote! { ::valide::Patch }
 }
 
+/// Return the validation error type of `intermediate_representation` as every type position names it.
+/// The type carries the generic arguments of the validated type once a parameter reaches an error payload.
+pub(crate) fn error_type(
+    intermediate_representation: &TypeIntermediateRepresentation,
+) -> TokenStream {
+    let error_ident = &intermediate_representation.error_ident;
+    if !intermediate_representation.error_enum_is_generic {
+        return quote! { #error_ident };
+    }
+    let (_, ty_generics, _) = intermediate_representation.generics.split_for_impl();
+
+    quote! { #error_ident #ty_generics }
+}
+
+/// Return the path that names a wrapper variant of the error enum of `intermediate_representation` as a function value.
+/// Such a position carries no return type to infer the generic arguments from, so the path spells them out.
+pub(crate) fn error_constructor_turbofish(
+    intermediate_representation: &TypeIntermediateRepresentation,
+) -> TokenStream {
+    let error_ident = &intermediate_representation.error_ident;
+    if !intermediate_representation.error_enum_is_generic {
+        return quote! { #error_ident };
+    }
+    let (_, ty_generics, _) = intermediate_representation.generics.split_for_impl();
+    let turbofish = ty_generics.as_turbofish();
+
+    quote! { #error_ident #turbofish }
+}
+
 /// Build the documentation attribute that carries the given `text`.
 pub(crate) fn doc(text: &str) -> TokenStream {
     quote! { #[doc = #text] }
@@ -169,7 +198,9 @@ pub(crate) fn final_validation_calls(
     draft_name: &TokenStream,
 ) -> TokenStream {
     let type_ident = &intermediate_representation.ident;
-    let error_ident = &intermediate_representation.error_ident;
+    let (_, ty_generics, _) = intermediate_representation.generics.split_for_impl();
+    let turbofish = ty_generics.as_turbofish();
+    let error_constructor = error_constructor_turbofish(intermediate_representation);
     let calls = intermediate_representation
         .final_validations
         .iter()
@@ -179,8 +210,8 @@ pub(crate) fn final_validation_calls(
 
             quote! {
                 ::core::result::Result::map_err(
-                    #type_ident::#fn_ident(#draft_name),
-                    #error_ident::#wrapper_variant,
+                    #type_ident #turbofish::#fn_ident(#draft_name),
+                    #error_constructor::#wrapper_variant,
                 )?;
             }
         });
@@ -190,10 +221,13 @@ pub(crate) fn final_validation_calls(
 
 /// Generate the bound assertions of every nested field of `intermediate_representation` against `trait_path`.
 /// The span of the field type carries the diagnostic, so the compiler points at the field.
+/// The generic parameters of the validated type reach the assertion function, which binds the ones the field type names.
 fn nested_assertions(
     intermediate_representation: &TypeIntermediateRepresentation,
     trait_path: &TokenStream,
 ) -> TokenStream {
+    let (impl_generics, _, where_clause) = intermediate_representation.generics.split_for_impl();
+    let assertion_allow = assertion_allow();
     let assertions = intermediate_representation
         .fields
         .iter()
@@ -202,9 +236,12 @@ fn nested_assertions(
             let ty = &field.ty;
 
             quote_spanned! { ty.span()=>
-                const _: fn() = || {
-                    fn assert_nested_field<NestedType: #trait_path>() {}
-                    assert_nested_field::<#ty>();
+                const _: () = {
+                    #assertion_allow
+                    fn assertion #impl_generics () #where_clause {
+                        fn assert_nested_field<NestedType: #trait_path>() {}
+                        assert_nested_field::<#ty>();
+                    }
                 };
             }
         });
@@ -215,9 +252,12 @@ fn nested_assertions(
 /// Generate the assertion that every final validation error of `intermediate_representation` implements [`Error`](core::error::Error).
 /// The generated error enum reports such an error as its source, which needs the trait.
 /// The span of the error type carries the diagnostic, so the compiler points at the attribute.
+/// The generic parameters of the validated type reach the assertion function, which binds the ones the error type names.
 fn final_validation_error_assertions(
     intermediate_representation: &TypeIntermediateRepresentation,
 ) -> TokenStream {
+    let (impl_generics, _, where_clause) = intermediate_representation.generics.split_for_impl();
+    let assertion_allow = assertion_allow();
     let assertions = intermediate_representation
         .final_validations
         .iter()
@@ -230,9 +270,12 @@ fn final_validation_error_assertions(
             };
 
             quote! {
-                const _: fn() = || {
-                    fn assert_final_validation_error<ErrorType: ::core::error::Error>() {}
-                    #assertion_call
+                const _: () = {
+                    #assertion_allow
+                    fn assertion #impl_generics () #where_clause {
+                        fn assert_final_validation_error<ErrorType: ::core::error::Error>() {}
+                        #assertion_call
+                    }
                 };
             }
         });
@@ -241,13 +284,29 @@ fn final_validation_error_assertions(
 }
 
 /// Generate the assertion that the type of `intermediate_representation` implements `Clone`, which every setter needs.
+/// The assertion function carries the generics of the validated type, so the assertion holds under its own where clause.
 fn clone_assertion(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
     let type_ident = &intermediate_representation.ident;
+    let (impl_generics, ty_generics, where_clause) =
+        intermediate_representation.generics.split_for_impl();
+    let assertion_allow = assertion_allow();
 
     quote_spanned! { type_ident.span()=>
-        const _: fn() = || {
-            fn assert_patched_type<PatchedType: ::core::clone::Clone>() {}
-            assert_patched_type::<#type_ident>();
+        const _: () = {
+            #assertion_allow
+            fn assertion #impl_generics () #where_clause {
+                fn assert_patched_type<PatchedType: ::core::clone::Clone>() {}
+                assert_patched_type::<#type_ident #ty_generics>();
+            }
         };
+    }
+}
+
+/// Build the attribute that lets an assertion function stay uncalled.
+/// The three assertion shells share it, because a caller that never calls the function must see no warning.
+/// An `expect` attribute would warn on its own every time the lint of the generated code stays quiet.
+fn assertion_allow() -> TokenStream {
+    quote! {
+        #[allow(dead_code, reason = "the assertion function is type checked and never called")]
     }
 }

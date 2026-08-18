@@ -8,7 +8,10 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{doc, final_validation_calls, validate_trait, validator_ident, variant_of},
+    expand::{
+        doc, error_constructor_turbofish, error_type, final_validation_calls, validate_trait,
+        validator_ident, variant_of,
+    },
     intermediate_representation::{
         FieldIntermediateRepresentation, Rule, TypeIntermediateRepresentation,
     },
@@ -18,7 +21,9 @@ use crate::{
 pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
     let vis = &intermediate_representation.vis;
     let draft_ident = &intermediate_representation.draft_ident;
-    let error_ident = &intermediate_representation.error_ident;
+    let (impl_generics, ty_generics, where_clause) =
+        intermediate_representation.generics.split_for_impl();
+    let error_enum_type = error_type(intermediate_representation);
     let aggregate_doc = doc("Validate every field of the draft with a fail fast policy.");
     let return_doc = doc("Return the first error found.");
 
@@ -38,10 +43,10 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
         .filter_map(|field| validator(intermediate_representation, field));
 
     quote! {
-        impl #draft_ident {
+        impl #impl_generics #draft_ident #ty_generics #where_clause {
             #aggregate_doc
             #return_doc
-            #vis fn validate(&self) -> ::core::result::Result<(), #error_ident> {
+            #vis fn validate(&self) -> ::core::result::Result<(), #error_enum_type> {
                 #(#field_calls)*
                 #final_calls
 
@@ -65,7 +70,10 @@ fn validator(
     }
 
     let vis = &intermediate_representation.vis;
+    // A variant struct literal reads its own generic arguments from the return type of the validator,
+    // so it names the error enum without them
     let error_ident = &intermediate_representation.error_ident;
+    let error_enum_type = error_type(intermediate_representation);
     let field_enum_ident = &intermediate_representation.field_enum_ident;
     let member = &field.member;
     let validator = validator_ident(field);
@@ -100,11 +108,12 @@ fn validator(
         Rule::Nested { wrapper_variant } => {
             let ty = &field.ty;
             let validate = validate_trait();
+            let error_constructor = error_constructor_turbofish(intermediate_representation);
 
             quote! {
                 ::core::result::Result::map_err(
                     <#ty as #validate>::validate(&self.#member),
-                    #error_ident::#wrapper_variant,
+                    #error_constructor::#wrapper_variant,
                 )?;
             }
         }
@@ -112,7 +121,7 @@ fn validator(
 
     Some(quote! {
         #validator_doc
-        #vis fn #validator(&self) -> ::core::result::Result<(), #error_ident> {
+        #vis fn #validator(&self) -> ::core::result::Result<(), #error_enum_type> {
             #body
 
             ::core::result::Result::Ok(())

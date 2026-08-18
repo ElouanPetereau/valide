@@ -5,7 +5,7 @@
 //! The expanders never look at a syntax tree again.
 
 use proc_macro2::TokenStream;
-use syn::{Attribute, Ident, Member, Path, Type, Visibility};
+use syn::{Attribute, Generics, Ident, Member, Path, Type, Visibility};
 
 /// Shape of a validated type, which drives the field access of the generated code.
 #[derive(Clone, Copy, Debug)]
@@ -72,12 +72,18 @@ pub(crate) struct TypeIntermediateRepresentation {
     pub(crate) ident: Ident,
     /// Visibility of the validated type, which every generated item shares.
     pub(crate) vis: Visibility,
+    /// Generics of the validated type, copied verbatim from the derive input.
+    /// Every generated item carries them, a declaration with its bounds and an implementation with its split spelling.
+    pub(crate) generics: Generics,
     /// Identifier of the generated draft.
     pub(crate) draft_ident: Ident,
     /// Identifier of the generated field enum.
     pub(crate) field_enum_ident: Ident,
     /// Identifier of the generated validation error enum.
     pub(crate) error_ident: Ident,
+    /// Whether a generic parameter of the validated type reaches a wrapped error type.
+    /// The generated error enum then carries the generics of the validated type.
+    pub(crate) error_enum_is_generic: bool,
     /// Shape of the validated type.
     pub(crate) shape: Shape,
     /// Fields in declaration order.

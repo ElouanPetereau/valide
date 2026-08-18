@@ -10,7 +10,8 @@ use quote::quote;
 
 use crate::{
     expand::{
-        doc, final_validation_calls, new_value_ident, patch_trait, setter_ident, validator_ident,
+        doc, error_type, final_validation_calls, new_value_ident, patch_trait, setter_ident,
+        validator_ident,
     },
     intermediate_representation::{
         FieldIntermediateRepresentation, Rule, Shape, TypeIntermediateRepresentation,
@@ -21,6 +22,8 @@ use crate::{
 pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
     let type_ident = &intermediate_representation.ident;
     let draft_ident = &intermediate_representation.draft_ident;
+    let (impl_generics, ty_generics, where_clause) =
+        intermediate_representation.generics.split_for_impl();
     let patch = patch_trait();
 
     let conversion_body = conversion_body(intermediate_representation);
@@ -30,21 +33,23 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
         .map(|field| setter(intermediate_representation, field));
 
     quote! {
-        impl ::core::convert::From<#type_ident> for #draft_ident {
-            fn from(value: #type_ident) -> Self {
+        impl #impl_generics ::core::convert::From<#type_ident #ty_generics> for #draft_ident #ty_generics
+        #where_clause
+        {
+            fn from(value: #type_ident #ty_generics) -> Self {
                 #conversion_body
             }
         }
 
-        impl #patch for #type_ident {
+        impl #impl_generics #patch for #type_ident #ty_generics #where_clause {
             fn to_draft(&self) -> Self::Draft {
-                <#draft_ident as ::core::convert::From<#type_ident>>::from(
+                <#draft_ident #ty_generics as ::core::convert::From<#type_ident #ty_generics>>::from(
                     ::core::clone::Clone::clone(self),
                 )
             }
         }
 
-        impl #type_ident {
+        impl #impl_generics #type_ident #ty_generics #where_clause {
             #(#setters)*
         }
     }
@@ -92,7 +97,8 @@ fn setter(
     let vis = &intermediate_representation.vis;
     let type_ident = &intermediate_representation.ident;
     let draft_ident = &intermediate_representation.draft_ident;
-    let error_ident = &intermediate_representation.error_ident;
+    let (_, ty_generics, _) = intermediate_representation.generics.split_for_impl();
+    let error_enum_type = error_type(intermediate_representation);
     let ty = &field.ty;
     let member = &field.member;
     let setter = setter_ident(field);
@@ -145,8 +151,8 @@ fn setter(
         #vis fn #setter(
             &mut self,
             #new_value: #ty,
-        ) -> ::core::result::Result<(), #error_ident> {
-            let mut tmp_draft: #draft_ident = <#draft_ident as ::core::convert::From<#type_ident>>::from(
+        ) -> ::core::result::Result<(), #error_enum_type> {
+            let mut tmp_draft: #draft_ident #ty_generics = <#draft_ident #ty_generics as ::core::convert::From<#type_ident #ty_generics>>::from(
                 ::core::clone::Clone::clone(self),
             );
             tmp_draft.#member = #draft_assignment;

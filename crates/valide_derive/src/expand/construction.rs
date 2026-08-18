@@ -9,7 +9,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{doc, getter_ident, is_returned_by_value, validate_trait},
+    expand::{doc, error_type, getter_ident, is_returned_by_value, validate_trait},
     intermediate_representation::{
         FieldIntermediateRepresentation, Rule, Shape, TypeIntermediateRepresentation,
     },
@@ -20,7 +20,10 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     let vis = &intermediate_representation.vis;
     let type_ident = &intermediate_representation.ident;
     let draft_ident = &intermediate_representation.draft_ident;
-    let error_ident = &intermediate_representation.error_ident;
+    let (impl_generics, ty_generics, where_clause) =
+        intermediate_representation.generics.split_for_impl();
+    let turbofish = ty_generics.as_turbofish();
+    let error_enum_type = error_type(intermediate_representation);
     let validate = validate_trait();
 
     let new_doc = doc(&format!(
@@ -34,30 +37,32 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     let unchecked_body = unchecked_body(intermediate_representation);
 
     quote! {
-        impl ::core::convert::TryFrom<#draft_ident> for #type_ident {
-            type Error = #error_ident;
+        impl #impl_generics ::core::convert::TryFrom<#draft_ident #ty_generics> for #type_ident #ty_generics
+        #where_clause
+        {
+            type Error = #error_enum_type;
 
-            fn try_from(value: #draft_ident) -> ::core::result::Result<Self, Self::Error> {
+            fn try_from(value: #draft_ident #ty_generics) -> ::core::result::Result<Self, Self::Error> {
                 <Self as #validate>::from_draft(value)
             }
         }
 
-        impl #type_ident {
+        impl #impl_generics #type_ident #ty_generics #where_clause {
             #new_doc
             #new_return_doc
-            #vis fn new(draft: #draft_ident) -> ::core::result::Result<Self, #error_ident> {
-                <Self as ::core::convert::TryFrom<#draft_ident>>::try_from(draft)
+            #vis fn new(draft: #draft_ident #ty_generics) -> ::core::result::Result<Self, #error_enum_type> {
+                <Self as ::core::convert::TryFrom<#draft_ident #ty_generics>>::try_from(draft)
             }
 
             #(#getters)*
         }
 
-        impl #validate for #type_ident {
-            type Draft = #draft_ident;
-            type Error = #error_ident;
+        impl #impl_generics #validate for #type_ident #ty_generics #where_clause {
+            type Draft = #draft_ident #ty_generics;
+            type Error = #error_enum_type;
 
             fn validate(draft: &Self::Draft) -> ::core::result::Result<(), Self::Error> {
-                #draft_ident::validate(draft)
+                #draft_ident #turbofish::validate(draft)
             }
 
             fn from_draft_unchecked(draft: Self::Draft) -> Self {
