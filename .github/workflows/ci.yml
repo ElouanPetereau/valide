@@ -94,3 +94,18 @@ jobs:
       - run: cargo test --workspace
       # The same tests without the derive re-export of `valide` and without the doctests
       - run: cargo test -p valide --no-default-features --lib
+
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # The example targets only, the Clippy and Formatting jobs already cover the whole workspace
+      - run: cargo clippy --workspace --examples -- -D warnings
+      - run: cargo fmt --all --check
+      - run: cargo run -p valide --example spacecraft

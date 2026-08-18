@@ -18,70 +18,16 @@ Two derive macros (`Validate` and `Patch`) generate that machinery, so a type de
 
 You may be looking for:
 - [An overview of valide](./OVERVIEW.md)
+- [Complete Examples](./crates/valide/examples/)
 
 ## Example
 
-<details>
-<summary>
-Click to show Cargo.toml.
-</summary>
+The [`crates/valide/examples`](./crates/valide/examples/) folder holds a complete, runnable example.
+The `spacecraft` example builds a validated spacecraft model, patches a field through a validated setter and serialize/deserialize it to a JSON document.
+The unit tests of `valide` compile the same model file, so the example cannot drift from the tested code.
 
-```toml
-[dependencies]
-
-# The core APIs, including the Validate and Patch traits.
-# The "derive" feature is only required when using #[derive(Validate, Patch)] to use the derives to generate most of the boilerplate code.
-validate = { version = "0.1.0", features = ["derive"] }
-```
-
-</details>
-
-```rust
-use valide::{Patch, Validate};
-
-/// Error of the mass check of a spacecraft.
-#[derive(Clone, PartialEq, Debug, thiserror::Error)]
-pub enum MassSumError {
-    /// The bus weighs more than the whole spacecraft.
-    #[error("The total mass must cover the mass of the bus")]
-    MassSmallerThanSum,
-}
-
-/// Reference properties of a spacecraft.
-#[derive(Clone, Validate, Patch)]
-#[final_validation(validate_mass_sum, error = MassSumError)]
-pub struct Spacecraft {
-    /// Total mass in kilograms (kg).
-    #[validate(range(0.0..f64::INFINITY))]
-    mass: f64,
-    /// Mass of the bus in kilograms (kg).
-    #[validate(range(0.0..=30_000.0))]
-    bus_mass: f64,
-    /// Name of the mission.
-    #[validate(skip)]
-    mission: String,
-}
-
-impl Spacecraft {
-    /// Check that the total mass of the given `draft` covers its bus mass.
-    pub fn validate_mass_sum(draft: &SpacecraftDraft) -> Result<(), MassSumError> {
-        if draft.mass < draft.bus_mass {
-            return Err(MassSumError::MassSmallerThanSum);
-        }
-
-        Ok(())
-    }
-}
-
-fn main() {
-    // Build a validated spacecraft
-    let mut spacecraft = Spacecraft::new(SpacecraftDraft {
-        mass: 1000.0,
-        bus_mass: 600.0,
-        mission: "Sextant".to_owned(),
-    })
-    .expect("The given SpacecraftDraft should be valid");
-}
+```bash
+cargo run -p valide --example spacecraft
 ```
 
 ## Build and test
