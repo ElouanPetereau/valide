@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use valide::{Patch, Validate};
 
 /// List of supported celestial body kinds.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CelestialBodyKind {
     /// Sun.
     Sun,
@@ -19,6 +19,10 @@ pub enum CelestialBodyKind {
 
 /// Inertia matrix of a body.
 #[repr(transparent)]
+#[expect(
+    clippy::derive_partial_eq_without_eq,
+    reason = "the matrix stores a floating point parameter, so Eq would be wrong"
+)]
 #[derive(Clone, PartialEq)]
 pub struct InertiaMatrix<Type: RealField + Float>(Matrix3<Type>);
 

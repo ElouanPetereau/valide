@@ -106,6 +106,10 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     quote! {
         #enum_doc
         // The enum carries no `Eq`, so an error type of a final validation can hold a float
+        #[allow(
+            clippy::derive_partial_eq_without_eq,
+            reason = "a wrapped error type may hold a float, which the macro cannot know"
+        )]
         #[derive(::core::clone::Clone, ::core::cmp::PartialEq, ::core::fmt::Debug)]
         #vis enum #error_ident #generic_declaration {
             #out_of_range

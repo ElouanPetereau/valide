@@ -63,10 +63,6 @@ mod tests {
         unreachable_pub,
         reason = "the model items are public inside a private test module"
     )]
-    #[expect(
-        clippy::derive_partial_eq_without_eq,
-        reason = "the generated error enum drops Eq so a user error type can hold a float"
-    )]
     #[path = "model.rs"]
     mod model;
 

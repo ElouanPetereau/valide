@@ -5,10 +5,6 @@ use crate::model::{
     SpacecraftDraft,
 };
 
-#[expect(
-    clippy::derive_partial_eq_without_eq,
-    reason = "the generated error enum drops Eq so a user error type can hold a float"
-)]
 pub mod model;
 
 fn main() {
