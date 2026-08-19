@@ -613,7 +613,7 @@ mod tests {
             #[test]
             fn bus_mass_accepts_upper_bound() {
                 assert_eq!(
-                    spacecraft_draft_with_masses(1000.0, 30_000.0, 300.0).validate_bus_mass(),
+                    spacecraft_draft_with_masses(1000.0, 10_000.0, 300.0).validate_bus_mass(),
                     Ok(()),
                     "The included upper bound of the bus mass must be accepted"
                 );
@@ -622,12 +622,24 @@ mod tests {
             #[test]
             fn bus_mass_rejects_above_upper_bound() {
                 assert_eq!(
-                    spacecraft_draft_with_masses(1000.0, 30_000.1, 300.0).validate_bus_mass(),
+                    spacecraft_draft_with_masses(1000.0, 10_000.1, 300.0).validate_bus_mass(),
                     Err(SpacecraftValidationError::OutOfRange {
                         field: SpacecraftField::BusMass,
-                        range: "[0.0, 30_000.0]",
+                        range: "]0.0, 10_000.0]",
                     }),
                     "A bus mass above the upper bound must be rejected"
+                );
+            }
+
+            #[test]
+            fn bus_mass_rejects_zero() {
+                assert_eq!(
+                    spacecraft_draft_with_masses(1000.0, 0.0, 300.0).validate_bus_mass(),
+                    Err(SpacecraftValidationError::OutOfRange {
+                        field: SpacecraftField::BusMass,
+                        range: "]0.0, 10_000.0]",
+                    }),
+                    "The excluded lower bound of the bus mass must be rejected"
                 );
             }
 
@@ -637,7 +649,7 @@ mod tests {
                     spacecraft_draft_with_masses(1000.0, -1.0, 300.0).validate_bus_mass(),
                     Err(SpacecraftValidationError::OutOfRange {
                         field: SpacecraftField::BusMass,
-                        range: "[0.0, 30_000.0]",
+                        range: "]0.0, 10_000.0]",
                     }),
                     "A negative bus mass must be rejected"
                 );

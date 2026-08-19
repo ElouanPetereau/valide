@@ -253,7 +253,8 @@ pub struct Spacecraft<Type: RealField + Float = f64> {
     #[validate(range(0.0..f64::INFINITY))]
     mass: f64,
     /// Mass of the spacecraft bus in kilograms (kg).
-    #[validate(range(0.0..=30_000.0))]
+    /// The bus mass must be strictly positive.
+    #[validate(range(Bound::Excluded(0.0), Bound::Included(10_000.0)))]
     bus_mass: f64,
     /// Mass of the spacecraft sail in kilograms (kg).
     #[validate(range(0.0..=10_000.0))]
