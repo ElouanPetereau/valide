@@ -150,3 +150,12 @@ variant is `Value`.
 - The by value getter uses the written token of the field type, so an alias to a primitive gets a getter that returns a reference.
 - `Validate::from_draft_unchecked` skips the validation. It exists for the generated code.
   A direct call on an invalid draft builds an invalid value.
+- Generics are supported with some caveats
+  - A generic type gets no inferred bounds.
+    Declare every bound yourself, the macro copies the generics and the where clause verbatim onto every generated item, and a missing bound fails with the ordinary compiler error.
+  - A floating point literal inside a range cannot bind a generic parameter.
+    Write the bounds in the parameter, such as `range(Number::ZERO..=Number::ONE)`.
+  - Only a nested field type and a final validation error type carry a parameter into the error enum.
+    Once one parameter reaches it, every parameter must.
+    The derive rejects a proper subset with an error at each unused parameter. Remove that parameter, nest it in a validated field, or name it in a final validation error.
+- A parameter inside the error enum needs `'static`, `Debug` and `Display` bounds, and `Patch` needs `Clone`.
