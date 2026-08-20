@@ -10,22 +10,24 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{doc, error_type, validate_trait},
+    expand::{ExpansionContext, doc, validate_trait},
     intermediate_representation::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
         VariantKind, VariantRule,
     },
 };
 
-/// Generate the construction surface of `intermediate_representation`.
-pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+/// Generate the construction surface of the validated type of `context`.
+pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     let vis = &intermediate_representation.vis;
     let type_ident = &intermediate_representation.ident;
     let draft_ident = &intermediate_representation.draft_ident;
-    let (impl_generics, ty_generics, where_clause) =
-        intermediate_representation.generics.split_for_impl();
-    let turbofish = ty_generics.as_turbofish();
-    let error_enum_type = error_type(intermediate_representation);
+    let impl_generics = context.impl_generics();
+    let ty_generics = context.ty_generics();
+    let where_clause = context.where_clause();
+    let turbofish = context.turbofish();
+    let error_enum_type = context.error_type();
     let validate = validate_trait();
 
     let new_doc = doc(&format!(

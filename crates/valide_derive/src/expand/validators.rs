@@ -10,22 +10,22 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{
-        doc, error_constructor_turbofish, error_type, final_validation_calls, validate_trait,
-    },
+    expand::{ExpansionContext, doc, validate_trait},
     intermediate_representation::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
         VariantKind,
     },
 };
 
-/// Generate the validation functions of the draft of `intermediate_representation`.
-pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+/// Generate the validation functions of the draft of the validated type of `context`.
+pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     let vis = &intermediate_representation.vis;
     let draft_ident = &intermediate_representation.draft_ident;
-    let (impl_generics, ty_generics, where_clause) =
-        intermediate_representation.generics.split_for_impl();
-    let error_enum_type = error_type(intermediate_representation);
+    let impl_generics = context.impl_generics();
+    let ty_generics = context.ty_generics();
+    let where_clause = context.where_clause();
+    let error_enum_type = context.error_type();
     let aggregate_doc = match intermediate_representation.shape {
         Shape::Named | Shape::Newtype => {
             doc("Validate every field of the draft with a fail fast policy.")
@@ -36,13 +36,13 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
 
     let checks = match intermediate_representation.shape {
         Shape::Named | Shape::Newtype => field_calls(intermediate_representation),
-        Shape::Enum => variant_checks(intermediate_representation),
+        Shape::Enum => variant_checks(context),
     };
-    let final_calls = final_validation_calls(intermediate_representation, &quote! { self });
+    let final_calls = context.final_validation_calls(&quote! { self });
     let validators = intermediate_representation
         .fields
         .iter()
-        .filter_map(|field| field_validator(intermediate_representation, field));
+        .filter_map(|field| field_validator(context, field));
 
     quote! {
         impl #impl_generics #draft_ident #ty_generics #where_clause {
@@ -76,17 +76,18 @@ fn field_calls(intermediate_representation: &TypeIntermediateRepresentation) -> 
     quote! { #(#calls)* }
 }
 
-/// Generate the match that validates the payload of the draft variant of `intermediate_representation`.
+/// Generate the match that validates the payload of the draft variant of the validated type of `context`.
 /// A nested variant delegates to the type of its payload and wraps the error that the type returns.
 /// Every variant that carries no rule shares a single arm, so no two arms of the match hold the same body.
 /// Return an empty stream for an enum without a variant, which carries no payload to reach.
-fn variant_checks(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     if intermediate_representation.variants.is_empty() {
         return TokenStream::new();
     }
 
     let validate = validate_trait();
-    let error_constructor = error_constructor_turbofish(intermediate_representation);
+    let error_constructor = context.error_constructor_turbofish();
     let mut nested_arms: Vec<TokenStream> = Vec::new();
     let mut plain_patterns: Vec<TokenStream> = Vec::new();
     for variant in &intermediate_representation.variants {
@@ -118,10 +119,10 @@ fn variant_checks(intermediate_representation: &TypeIntermediateRepresentation) 
     }
 }
 
-/// Generate the field validator of the given `field` of `intermediate_representation`.
+/// Generate the field validator of the given `field` of the validated type of `context`.
 /// Return nothing for a skip field, which takes part in no validation at all.
 fn field_validator(
-    intermediate_representation: &TypeIntermediateRepresentation,
+    context: &ExpansionContext<'_>,
     field: &FieldIntermediateRepresentation,
 ) -> Option<TokenStream> {
     // A skip field carries no validator at all, so nothing below is generated for it
@@ -129,11 +130,12 @@ fn field_validator(
         return None;
     }
 
+    let intermediate_representation = context.intermediate_representation();
     let vis = &intermediate_representation.vis;
     // A variant struct literal reads its own generic arguments from the return type of the validator,
     // so it names the error enum without them
     let error_ident = &intermediate_representation.error_ident;
-    let error_enum_type = error_type(intermediate_representation);
+    let error_enum_type = context.error_type();
     let field_enum_ident = &intermediate_representation.field_enum_ident;
     let member = &field.member;
     let validator = field.validator_ident();
@@ -168,7 +170,7 @@ fn field_validator(
         FieldRule::Nested { wrapper_variant } => {
             let ty = &field.ty;
             let validate = validate_trait();
-            let error_constructor = error_constructor_turbofish(intermediate_representation);
+            let error_constructor = context.error_constructor_turbofish();
 
             quote! {
                 ::core::result::Result::map_err(

@@ -9,12 +9,13 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{doc, error_type, validate_trait},
+    expand::{ExpansionContext, doc, validate_trait},
     intermediate_representation::{FieldRule, TypeIntermediateRepresentation},
 };
 
-/// Generate the validation error enum of `intermediate_representation`, with its [`Display`](core::fmt::Display) and its [`Error`](core::error::Error).
-pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+/// Generate the validation error enum of the validated type of `context`, with its [`Display`](core::fmt::Display) and its [`Error`](core::error::Error).
+pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     let vis = &intermediate_representation.vis;
     let type_ident = &intermediate_representation.ident;
     let error_ident = &intermediate_representation.error_ident;
@@ -23,10 +24,9 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     let field_doc = doc("The field that failed the validation.");
     // Only a parameter that reaches a variant may reach the enum,
     // because an unused parameter of an enum is an error that the caller cannot fix
-    let generic_declaration = generic_declaration(intermediate_representation);
-    let (implementation_header, implementation_where_clause) =
-        implementation_generics(intermediate_representation);
-    let error_enum_type = error_type(intermediate_representation);
+    let generic_declaration = generic_declaration(context);
+    let (implementation_header, implementation_where_clause) = implementation_generics(context);
+    let error_enum_type = context.error_type();
 
     let has_range = intermediate_representation
         .fields
@@ -153,29 +153,27 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     }
 }
 
-/// Return the generics that the declaration of the error enum of `intermediate_representation` carries.
+/// Return the generics that the declaration of the error enum of the validated type of `context` carries.
 /// The declaration stays free of every generic parameter while no parameter reaches a variant.
-fn generic_declaration(
-    intermediate_representation: &TypeIntermediateRepresentation,
-) -> Option<TokenStream> {
+fn generic_declaration(context: &ExpansionContext<'_>) -> Option<TokenStream> {
+    let intermediate_representation = context.intermediate_representation();
     if !intermediate_representation.error_enum_is_generic {
         return None;
     }
     let generics = &intermediate_representation.generics;
-    let (_, _, where_clause) = intermediate_representation.generics.split_for_impl();
+    let where_clause = context.where_clause();
 
     Some(quote! { #generics #where_clause })
 }
 
-/// Return the header generics and the where clause that every implementation of the error enum of `intermediate_representation` carries.
+/// Return the header generics and the where clause that every implementation of the error enum of the validated type of `context` carries.
 /// Both stay empty while the error enum is free of every generic parameter.
-fn implementation_generics(
-    intermediate_representation: &TypeIntermediateRepresentation,
-) -> (TokenStream, TokenStream) {
-    if !intermediate_representation.error_enum_is_generic {
+fn implementation_generics(context: &ExpansionContext<'_>) -> (TokenStream, TokenStream) {
+    if !context.intermediate_representation().error_enum_is_generic {
         return (TokenStream::new(), TokenStream::new());
     }
-    let (impl_generics, _, where_clause) = intermediate_representation.generics.split_for_impl();
+    let impl_generics = context.impl_generics();
+    let where_clause = context.where_clause();
 
     (quote! { #impl_generics }, quote! { #where_clause })
 }

@@ -8,15 +8,14 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{article, doc},
-    intermediate_representation::{
-        FieldIntermediateRepresentation, TypeIntermediateRepresentation,
-    },
+    expand::{ExpansionContext, article, doc},
+    intermediate_representation::FieldIntermediateRepresentation,
 };
 
-/// Generate the field enum of `intermediate_representation` and its [`Display`](core::fmt::Display) implementation.
-/// Return an empty stream when no field of `intermediate_representation` can name itself inside an error.
-pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+/// Generate the field enum of the validated type of `context` and its [`Display`](core::fmt::Display) implementation.
+/// Return an empty stream when no field of the validated type can name itself inside an error.
+pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     let named_fields: Vec<&FieldIntermediateRepresentation> = intermediate_representation
         .fields
         .iter()

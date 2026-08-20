@@ -11,22 +11,23 @@ use quote::quote;
 use syn::Type;
 
 use crate::{
-    expand::{article, doc, validate_trait},
+    expand::{ExpansionContext, article, doc, validate_trait},
     intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
-        VariantIntermediateRepresentation, VariantKind, VariantRule,
+        FieldIntermediateRepresentation, FieldRule, Shape, VariantIntermediateRepresentation,
+        VariantKind, VariantRule,
     },
 };
 
-/// Generate the draft of `intermediate_representation`.
-pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+/// Generate the draft of the validated type of `context`.
+pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     let vis = &intermediate_representation.vis;
     let type_ident = &intermediate_representation.ident;
     let draft_ident = &intermediate_representation.draft_ident;
     // The declaration carries the generics of the validated type with their bounds and their defaults,
     // which the split spelling of an implementation drops
     let generics = &intermediate_representation.generics;
-    let (_, _, where_clause) = intermediate_representation.generics.split_for_impl();
+    let where_clause = context.where_clause();
     let draft_doc = doc(&format!(
         "Unvalidated draft of {} [`{type_ident}`].",
         article(&type_ident.to_string())

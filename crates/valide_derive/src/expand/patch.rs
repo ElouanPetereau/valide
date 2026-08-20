@@ -10,23 +10,25 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{doc, error_type, final_validation_calls, patch_trait},
+    expand::{ExpansionContext, doc, patch_trait},
     intermediate_representation::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
         VariantKind, VariantRule,
     },
 };
 
-/// Generate the patch surface of `intermediate_representation`.
-pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+/// Generate the patch surface of the validated type of `context`.
+pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     let type_ident = &intermediate_representation.ident;
     let draft_ident = &intermediate_representation.draft_ident;
-    let (impl_generics, ty_generics, where_clause) =
-        intermediate_representation.generics.split_for_impl();
+    let impl_generics = context.impl_generics();
+    let ty_generics = context.ty_generics();
+    let where_clause = context.where_clause();
     let patch = patch_trait();
 
     let conversion_body = conversion_body(intermediate_representation);
-    let setters = field_setters(intermediate_representation);
+    let setters = field_setters(context);
 
     quote! {
         impl #impl_generics ::core::convert::From<#type_ident #ty_generics> for #draft_ident #ty_generics
@@ -49,20 +51,22 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     }
 }
 
-/// Generate the implementation block that carries the setters of `intermediate_representation`.
+/// Generate the implementation block that carries the setters of the validated type of `context`.
 /// An enum gets no block at all, because it gets no setter.
-fn field_setters(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+fn field_setters(context: &ExpansionContext<'_>) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     if matches!(intermediate_representation.shape, Shape::Enum) {
         return TokenStream::new();
     }
 
     let type_ident = &intermediate_representation.ident;
-    let (impl_generics, ty_generics, where_clause) =
-        intermediate_representation.generics.split_for_impl();
+    let impl_generics = context.impl_generics();
+    let ty_generics = context.ty_generics();
+    let where_clause = context.where_clause();
     let setters = intermediate_representation
         .fields
         .iter()
-        .map(|field| field_setter(intermediate_representation, field));
+        .map(|field| field_setter(context, field));
 
     quote! {
         impl #impl_generics #type_ident #ty_generics #where_clause {
@@ -136,16 +140,17 @@ fn draft_field_value(field: &FieldIntermediateRepresentation) -> TokenStream {
     quote! { value.#member }
 }
 
-/// Generate the setter of the given `field` of `intermediate_representation`.
+/// Generate the setter of the given `field` of the validated type of `context`.
 fn field_setter(
-    intermediate_representation: &TypeIntermediateRepresentation,
+    context: &ExpansionContext<'_>,
     field: &FieldIntermediateRepresentation,
 ) -> TokenStream {
+    let intermediate_representation = context.intermediate_representation();
     let vis = &intermediate_representation.vis;
     let type_ident = &intermediate_representation.ident;
     let draft_ident = &intermediate_representation.draft_ident;
-    let (_, ty_generics, _) = intermediate_representation.generics.split_for_impl();
-    let error_enum_type = error_type(intermediate_representation);
+    let ty_generics = context.ty_generics();
+    let error_enum_type = context.error_type();
     let ty = &field.ty;
     let member = &field.member;
     let setter = field.setter_ident();
@@ -174,7 +179,7 @@ fn field_setter(
 
         quote! { let _: () = tmp_draft.#validator()?; }
     });
-    let final_calls = final_validation_calls(intermediate_representation, &quote! { &tmp_draft });
+    let final_calls = context.final_validation_calls(&quote! { &tmp_draft });
     // A nested field lends its value to the draft, which holds the draft of the nested type,
     // so the commit still owns the new value.
     // Every other field moves its new value into the draft and the commit moves it back out once the validation passed
