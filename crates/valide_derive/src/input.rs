@@ -809,15 +809,16 @@ mod tests {
     use proc_macro2::{Ident, Span};
     use syn::{DeriveInput, Generics, Member, parse_str};
 
-    use crate::intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
-        TypeIntermediateRepresentation, VariantKind, VariantRule,
-    };
-
-    use super::{
-        ERROR_PAYLOAD_SUBSET_MESSAGE, PAYLOAD_MARKER_MESSAGE, UNION_MESSAGE,
-        VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE, parameter_name, parse,
-        used_error_parameters,
+    use crate::{
+        input::{
+            ERROR_PAYLOAD_SUBSET_MESSAGE, PAYLOAD_MARKER_MESSAGE, UNION_MESSAGE,
+            VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE, parameter_name, parse,
+            used_error_parameters,
+        },
+        intermediate_representation::{
+            FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
+            TypeIntermediateRepresentation, VariantKind, VariantRule,
+        },
     };
 
     /// Build an identifier from `name`, with the call site span.

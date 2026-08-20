@@ -109,7 +109,7 @@ mod tests {
     use proc_macro2::{Ident, Span};
     use syn::Result;
 
-    use super::{
+    use crate::naming::{
         DRAFT_SUFFIX, field_variant, final_validation_wrapper_variant, first_collision,
         nested_wrapper_variant, suffixed_ident, to_pascal_case,
     };

@@ -274,7 +274,7 @@ mod tests {
     mod field_validation {
         /// Bounds of the shadow fraction value.
         mod shadow_fraction {
-            use super::super::model::{
+            use crate::tests::model::{
                 ShadowFractionDraft, ShadowFractionField, ShadowFractionValidationError,
             };
 
@@ -367,10 +367,10 @@ mod tests {
 
         /// Bounds of the gravitational parameter of a celestial body.
         mod celestial_body {
-            use crate::tests::model::CelestialBodyDraft;
-
-            use super::super::VALID_CELESTIAL_BODY_DRAFT;
-            use super::super::model::{CelestialBodyField, CelestialBodyValidationError};
+            use crate::tests::{
+                VALID_CELESTIAL_BODY_DRAFT,
+                model::{CelestialBodyDraft, CelestialBodyField, CelestialBodyValidationError},
+            };
 
             #[test]
             fn accepts_the_gravitational_parameter_of_the_earth() {
@@ -413,11 +413,9 @@ mod tests {
 
         /// Bounds of the three diagonal inertia entries, valid over the open range ]0, +inf[.
         mod inertia_matrix_diagonal {
-            use super::super::model::{
-                InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-            };
-            use super::super::{
+            use crate::tests::{
                 DIAGONAL_INERTIA_FIELD_CASES, diagonal_inertia_draft_with_precision,
+                model::{InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError},
                 validate_inertia_field,
             };
 
@@ -538,11 +536,9 @@ mod tests {
 
         /// Finiteness of the six off-diagonal inertia entries.
         mod inertia_matrix_off_diagonal {
-            use super::super::model::{
-                InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-            };
-            use super::super::{
+            use crate::tests::{
                 OFF_DIAGONAL_INERTIA_FIELD_CASES, diagonal_inertia_draft_with_precision,
+                model::{InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError},
                 validate_inertia_field,
             };
 
@@ -622,13 +618,14 @@ mod tests {
 
         /// Bounds of the spacecraft masses and wrapper variants of the nested errors.
         mod spacecraft_masses {
-            use super::super::model::{
-                InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-                ShadowFractionDraft, ShadowFractionField, ShadowFractionValidationError,
-                SpacecraftDraft, SpacecraftField, SpacecraftValidationError,
-            };
-            use super::super::{
-                VALID_SPACECRAFT_DRAFT, diagonal_inertia_draft, spacecraft_draft_with_masses,
+            use crate::tests::{
+                VALID_SPACECRAFT_DRAFT, diagonal_inertia_draft,
+                model::{
+                    InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
+                    ShadowFractionDraft, ShadowFractionField, ShadowFractionValidationError,
+                    SpacecraftDraft, SpacecraftField, SpacecraftValidationError,
+                },
+                spacecraft_draft_with_masses,
             };
 
             #[test]
@@ -795,12 +792,12 @@ mod tests {
 
         /// Order guarantees of the fail fast validation.
         mod fail_fast_order {
-            use super::super::model::{
-                InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-                SpacecraftDraft, SpacecraftField, SpacecraftValidationError,
-            };
-            use super::super::{
+            use crate::tests::{
                 VALID_INERTIA_DRAFT, VALID_SPACECRAFT_DRAFT, diagonal_inertia_draft,
+                model::{
+                    InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
+                    SpacecraftDraft, SpacecraftField, SpacecraftValidationError,
+                },
             };
 
             #[test]
@@ -857,12 +854,12 @@ mod tests {
 
     /// Delegation of a validated enum to the payload of its variants.
     mod variant_validation {
-        use crate::tests::model::CelestialBodyDraft;
-
-        use super::VALID_CELESTIAL_BODY_DRAFT;
-        use super::model::{
-            CelestialBodyField, CelestialBodyKindDraft, CelestialBodyKindValidationError,
-            CelestialBodyValidationError,
+        use crate::tests::{
+            VALID_CELESTIAL_BODY_DRAFT,
+            model::{
+                CelestialBodyDraft, CelestialBodyField, CelestialBodyKindDraft,
+                CelestialBodyKindValidationError, CelestialBodyValidationError,
+            },
         };
 
         #[test]
@@ -910,11 +907,9 @@ mod tests {
     mod final_validation {
         /// Symmetry and physical realizability of an inertia matrix draft.
         mod realizability {
-            use super::super::model::{
-                InertiaMatrixRealizabilityValidationError, InertiaMatrixSerializable,
-            };
-            use super::super::{
+            use crate::tests::{
                 VALID_INERTIA_DRAFT, diagonal_inertia_draft, diagonal_inertia_draft_with_precision,
+                model::{InertiaMatrixRealizabilityValidationError, InertiaMatrixSerializable},
             };
 
             #[test]
@@ -1079,8 +1074,10 @@ mod tests {
 
         /// Tolerance semantics of the spacecraft mass sum.
         mod mass_sum {
-            use super::super::model::{Spacecraft, SpacecraftMassSumValidationError};
-            use super::super::spacecraft_draft_with_masses;
+            use crate::tests::{
+                model::{Spacecraft, SpacecraftMassSumValidationError},
+                spacecraft_draft_with_masses,
+            };
 
             #[test]
             fn accepts_exact_equality() {
@@ -1144,23 +1141,26 @@ mod tests {
 
     /// Construction entry points of the validated types.
     mod construction {
-        use super::{
-            EARTH_GRAVITATIONAL_PARAMETER, VALID_CELESTIAL_BODY_DRAFT, VALID_INERTIA_DRAFT,
-            VALID_SPACECRAFT_DRAFT, assert_float_eq, custom_gravitational_parameter,
-            diagonal_inertia_draft, diagonal_inertia_draft_with_precision,
-            spacecraft_draft_with_area, spacecraft_draft_with_masses,
-        };
         use core::error::Error as _;
 
-        use crate::{Validate as _, tests::model::CelestialBodyDraft};
-
-        use super::model::{
-            CelestialBodyField, CelestialBodyKind, CelestialBodyKindDraft,
-            CelestialBodyKindValidationError, CelestialBodyValidationError,
-            InertiaMatrixSerializable, InertiaMatrixSerializableField,
-            InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
-            ShadowFractionField, ShadowFractionValidationError, Spacecraft, SpacecraftDraft,
-            SpacecraftField, SpacecraftMassSumValidationError, SpacecraftValidationError,
+        use crate::{
+            Validate as _,
+            tests::model::CelestialBodyDraft,
+            tests::{
+                EARTH_GRAVITATIONAL_PARAMETER, VALID_CELESTIAL_BODY_DRAFT, VALID_INERTIA_DRAFT,
+                VALID_SPACECRAFT_DRAFT, assert_float_eq, custom_gravitational_parameter,
+                diagonal_inertia_draft, diagonal_inertia_draft_with_precision,
+                model::{
+                    CelestialBodyField, CelestialBodyKind, CelestialBodyKindDraft,
+                    CelestialBodyKindValidationError, CelestialBodyValidationError,
+                    InertiaMatrixSerializable, InertiaMatrixSerializableField,
+                    InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
+                    ShadowFractionField, ShadowFractionValidationError, Spacecraft,
+                    SpacecraftDraft, SpacecraftField, SpacecraftMassSumValidationError,
+                    SpacecraftValidationError,
+                },
+                spacecraft_draft_with_area, spacecraft_draft_with_masses,
+            },
         };
 
         #[test]
@@ -1516,11 +1516,12 @@ mod tests {
 
     /// Conversions between the wrapper, its serde representation and its draft.
     mod conversion {
-        use super::assert_float_eq;
-        use crate::{Patch as _, Validate as _};
-
-        use super::model::{
-            InertiaMatrix, InertiaMatrixSerializable, InertiaMatrixSerializableDraft,
+        use crate::{
+            Patch as _, Validate as _,
+            tests::{
+                assert_float_eq,
+                model::{InertiaMatrix, InertiaMatrixSerializable, InertiaMatrixSerializableDraft},
+            },
         };
 
         /// Build an inertia draft where every entry differs.
@@ -1589,20 +1590,22 @@ mod tests {
 
     /// Validated setters and draft round trips.
     mod patch {
-        use super::{
-            EARTH_GRAVITATIONAL_PARAMETER, VALID_CELESTIAL_BODY_DRAFT, VALID_INERTIA_DRAFT,
-            VALID_SPACECRAFT_DRAFT, assert_float_eq, custom_gravitational_parameter,
-            diagonal_inertia_draft, spacecraft_draft_with_masses,
-        };
-        use crate::{Patch as _, Validate as _};
-
-        use super::model::{
-            CelestialBodyKind, CelestialBodyKindDraft, InertiaMatrix,
-            InertiaMatrixRealizabilityValidationError, InertiaMatrixSerializable,
-            InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-            ShadowFraction, ShadowFractionDraft, ShadowFractionField,
-            ShadowFractionValidationError, Spacecraft, SpacecraftField,
-            SpacecraftMassSumValidationError, SpacecraftValidationError,
+        use crate::{
+            Patch as _, Validate as _,
+            tests::{
+                EARTH_GRAVITATIONAL_PARAMETER, VALID_CELESTIAL_BODY_DRAFT, VALID_INERTIA_DRAFT,
+                VALID_SPACECRAFT_DRAFT, assert_float_eq, custom_gravitational_parameter,
+                diagonal_inertia_draft,
+                model::{
+                    CelestialBodyKind, CelestialBodyKindDraft, InertiaMatrix,
+                    InertiaMatrixRealizabilityValidationError, InertiaMatrixSerializable,
+                    InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
+                    ShadowFraction, ShadowFractionDraft, ShadowFractionField,
+                    ShadowFractionValidationError, Spacecraft, SpacecraftField,
+                    SpacecraftMassSumValidationError, SpacecraftValidationError,
+                },
+                spacecraft_draft_with_masses,
+            },
         };
 
         #[test]
@@ -1903,15 +1906,14 @@ mod tests {
 
     /// Serde wire format and deserialization.
     mod serde_integration {
-        use crate::tests::model::CelestialBodyDraft;
-
-        use super::model::{
-            CelestialBody, CelestialBodyKind, CelestialBodyKindDraft, InertiaMatrix,
-            ShadowFraction, Spacecraft, SpacecraftDraft,
-        };
-        use super::{
+        use crate::tests::{
             EARTH_GRAVITATIONAL_PARAMETER, VALID_CELESTIAL_BODY_DRAFT, VALID_SPACECRAFT_DRAFT,
-            assert_float_eq, custom_gravitational_parameter, spacecraft_draft_with_area,
+            assert_float_eq, custom_gravitational_parameter,
+            model::{
+                CelestialBody, CelestialBodyDraft, CelestialBodyKind, CelestialBodyKindDraft,
+                InertiaMatrix, ShadowFraction, Spacecraft, SpacecraftDraft,
+            },
+            spacecraft_draft_with_area,
         };
 
         /// Build the JSON document of a spacecraft with the given masses and inertia `inertia_xx`.

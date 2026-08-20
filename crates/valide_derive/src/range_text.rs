@@ -142,7 +142,7 @@ fn ends_with_constant(value: &Expr, constant_name: &str) -> bool {
 mod tests {
     use syn::{Expr, ExprRange};
 
-    use super::{BoundKind, bound_pair_text, sugared_text};
+    use crate::range_text::{BoundKind, bound_pair_text, sugared_text};
 
     /// Parse the given `source` as a range expression.
     fn range(source: &str) -> ExprRange {
