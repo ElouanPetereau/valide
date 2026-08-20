@@ -28,14 +28,8 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
     let (implementation_header, implementation_where_clause) = implementation_generics(context);
     let error_enum_type = context.error_type();
 
-    let has_range = intermediate_representation
-        .fields
-        .iter()
-        .any(|field| matches!(field.rule, FieldRule::Range { .. }));
-    let has_finite = intermediate_representation
-        .fields
-        .iter()
-        .any(|field| matches!(field.rule, FieldRule::Finite));
+    let has_range = intermediate_representation.has_range();
+    let has_finite = intermediate_representation.has_finite();
 
     let out_of_range = has_range.then(|| {
         let variant_doc = doc("The field value is outside its valid range.");
@@ -197,7 +191,7 @@ fn display_body(
             Self::NotFinite { field } => ::core::write!(f, "The {field} must be a finite number"),
         });
     }
-    for wrapper_variant in wrapper_variants(intermediate_representation) {
+    for wrapper_variant in intermediate_representation.wrapper_variants() {
         arms.push(quote! {
             Self::#wrapper_variant(error) => ::core::fmt::Display::fmt(error, f),
         });
@@ -228,7 +222,7 @@ fn source_body(
     if has_finite {
         arms.push(quote! { Self::NotFinite { .. } => ::core::option::Option::None, });
     }
-    for wrapper_variant in wrapper_variants(intermediate_representation) {
+    for wrapper_variant in intermediate_representation.wrapper_variants() {
         arms.push(quote! {
             Self::#wrapper_variant(error) => ::core::option::Option::Some(error),
         });
@@ -242,35 +236,4 @@ fn source_body(
             #(#arms)*
         }
     }
-}
-
-/// Return the wrapper variants of `intermediate_representation`, the nested variants first, then the final validations and the nested fields after.
-/// The order matches the order of the variants of the generated enum.
-fn wrapper_variants(
-    intermediate_representation: &TypeIntermediateRepresentation,
-) -> impl Iterator<Item = &proc_macro2::Ident> {
-    let payload_variants = intermediate_representation
-        .variants
-        .iter()
-        .filter_map(|variant| {
-            variant
-                .nested_payload()
-                .map(|(_, wrapper_variant)| wrapper_variant)
-        });
-    let final_variants = intermediate_representation
-        .final_validations
-        .iter()
-        .map(|final_validation| &final_validation.wrapper_variant);
-    let nested_variants =
-        intermediate_representation
-            .fields
-            .iter()
-            .filter_map(|field| match &field.rule {
-                FieldRule::Nested { wrapper_variant } => Some(wrapper_variant),
-                FieldRule::Range { .. } | FieldRule::Finite | FieldRule::Skip => None,
-            });
-
-    payload_variants
-        .chain(final_variants)
-        .chain(nested_variants)
 }

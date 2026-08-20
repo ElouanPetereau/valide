@@ -240,3 +240,60 @@ pub(crate) struct TypeIntermediateRepresentation {
     /// Payloads of the `draft_attr` attributes, which the generator re-emits on the draft verbatim.
     pub(crate) draft_passthrough: Vec<TokenStream>,
 }
+
+impl TypeIntermediateRepresentation {
+    /// Whether at least one field carries a range rule.
+    /// The generated error enum then carries the `OutOfRange` variant.
+    pub(crate) fn has_range(&self) -> bool {
+        self.fields
+            .iter()
+            .any(|field| matches!(field.rule, FieldRule::Range { .. }))
+    }
+
+    /// Whether at least one field carries a finite rule.
+    /// The generated error enum then carries the `NotFinite` variant.
+    pub(crate) fn has_finite(&self) -> bool {
+        self.fields
+            .iter()
+            .any(|field| matches!(field.rule, FieldRule::Finite))
+    }
+
+    /// Return the wrapper variants of the validated type, the nested variants first, then the final validations and the nested fields after.
+    /// The order matches the order of the variants of the generated enum.
+    pub(crate) fn wrapper_variants(&self) -> impl Iterator<Item = &Ident> {
+        let payload_variants = self.variants.iter().filter_map(|variant| {
+            variant
+                .nested_payload()
+                .map(|(_, wrapper_variant)| wrapper_variant)
+        });
+        let final_variants = self
+            .final_validations
+            .iter()
+            .map(|final_validation| &final_validation.wrapper_variant);
+        let nested_variants = self.fields.iter().filter_map(|field| match &field.rule {
+            FieldRule::Nested { wrapper_variant } => Some(wrapper_variant),
+            FieldRule::Range { .. } | FieldRule::Finite | FieldRule::Skip => None,
+        });
+
+        payload_variants
+            .chain(final_variants)
+            .chain(nested_variants)
+    }
+
+    /// Return the declared type of every nested field and of every nested variant payload of the validated type.
+    /// Such a type carries a validation of its own, which the generated code delegates to.
+    pub(crate) fn nested_types(&self) -> impl Iterator<Item = &Type> {
+        let field_types = self
+            .fields
+            .iter()
+            .filter(|field| matches!(field.rule, FieldRule::Nested { .. }))
+            .map(|field| &field.ty);
+        let payload_types = self.variants.iter().filter_map(|variant| {
+            variant
+                .nested_payload()
+                .map(|(payload_type, _)| payload_type)
+        });
+
+        field_types.chain(payload_types)
+    }
+}

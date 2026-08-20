@@ -5,9 +5,9 @@
 
 use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
-use syn::{ImplGenerics, Turbofish, Type, TypeGenerics, WhereClause, spanned::Spanned as _};
+use syn::{ImplGenerics, Turbofish, TypeGenerics, WhereClause, spanned::Spanned as _};
 
-use crate::intermediate_representation::{FieldRule, TypeIntermediateRepresentation};
+use crate::intermediate_representation::TypeIntermediateRepresentation;
 
 pub(crate) mod construction;
 pub(crate) mod draft;
@@ -129,7 +129,7 @@ impl<'ir> ExpansionContext<'ir> {
         let impl_generics = &self.impl_generics;
         let where_clause = self.where_clause;
         let assertion_allow = assertion_allow();
-        let assertions = self.nested_types().map(|ty| {
+        let assertions = self.intermediate_representation.nested_types().map(|ty| {
             quote_spanned! { ty.span()=>
                 const _: () = {
                     #assertion_allow
@@ -142,27 +142,6 @@ impl<'ir> ExpansionContext<'ir> {
         });
 
         quote! { #(#assertions)* }
-    }
-
-    /// Return the declared type of every nested field and of every nested variant payload of the validated type.
-    /// Such a type carries a validation of its own, which the generated code delegates to.
-    fn nested_types(&self) -> impl Iterator<Item = &'ir Type> {
-        let intermediate_representation = self.intermediate_representation;
-        let field_types = intermediate_representation
-            .fields
-            .iter()
-            .filter(|field| matches!(field.rule, FieldRule::Nested { .. }))
-            .map(|field| &field.ty);
-        let payload_types = intermediate_representation
-            .variants
-            .iter()
-            .filter_map(|variant| {
-                variant
-                    .nested_payload()
-                    .map(|(payload_type, _)| payload_type)
-            });
-
-        field_types.chain(payload_types)
     }
 
     /// Generate the assertion that every final validation error of the validated type implements [`Error`](core::error::Error).
