@@ -10,8 +10,8 @@ use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
 use quote::{ToTokens as _, quote};
 use syn::{
     Attribute, Data, DataStruct, DeriveInput, Error, Expr, Field, Fields, GenericParam, Generics,
-    Ident, Index, Member, Meta, MetaList, Path, Result, Token, Variant, parse::ParseStream,
-    punctuated::Punctuated, spanned::Spanned as _,
+    Ident, Index, Member, Meta, MetaList, Path, Result, Token, Variant, Visibility,
+    parse::ParseStream, punctuated::Punctuated, spanned::Spanned as _,
 };
 
 use crate::{
@@ -57,6 +57,8 @@ const NEWTYPE_LOGICAL_NAME: &str = "value";
 /// Message that describes the markers of a field.
 const MARKER_MESSAGE: &str =
     "a field needs exactly one #[validate(...)] marker among range(...), finite, nested and skip";
+/// Message of the rejection of a field that carries a visibility keyword.
+const PRIVATE_FIELD_MESSAGE: &str = "a validated field must be private, because the generated getters and setters guard every access";
 /// Message that describes the markers of a variant payload.
 const PAYLOAD_MARKER_MESSAGE: &str =
     "a variant payload needs exactly one #[validate(...)] marker among nested and skip";
@@ -237,7 +239,32 @@ fn struct_fields<'data>(
 }
 
 /// Parse the given `field`, at `position` in the declaration order, into its representation.
+/// The visibility of a field and the attribute grammar of a field are two independent rules,
+/// so a public field that also breaks the grammar carries the two errors together.
 fn parse_field(field: &Field, position: usize) -> Result<FieldIntermediateRepresentation> {
+    let Err(mut error) = require_private_field(field) else {
+        return parse_field_grammar(field, position);
+    };
+    if let Err(grammar_error) = parse_field_grammar(field, position) {
+        error.combine(grammar_error);
+    }
+
+    Err(error)
+}
+
+/// Check that the given `field` carries no visibility keyword.
+/// A public field lets a caller assign past the generated setters, which invalidates a validated
+/// value after its construction, so the generated getters and setters stay the only access path.
+fn require_private_field(field: &Field) -> Result<()> {
+    if matches!(field.vis, Visibility::Inherited) {
+        return Ok(());
+    }
+
+    Err(Error::new_spanned(&field.vis, PRIVATE_FIELD_MESSAGE))
+}
+
+/// Parse the attribute grammar of the given `field`, at `position` in the declaration order, into its representation.
+fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermediateRepresentation> {
     let (member, logical_name, name_span) = field.ident.as_ref().map_or_else(
         || {
             (
@@ -811,9 +838,9 @@ mod tests {
 
     use crate::{
         input::{
-            ERROR_PAYLOAD_SUBSET_MESSAGE, PAYLOAD_MARKER_MESSAGE, UNION_MESSAGE,
-            VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE, parameter_name, parse,
-            used_error_parameters,
+            ERROR_PAYLOAD_SUBSET_MESSAGE, MARKER_MESSAGE, PAYLOAD_MARKER_MESSAGE,
+            PRIVATE_FIELD_MESSAGE, UNION_MESSAGE, VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE,
+            parameter_name, parse, used_error_parameters,
         },
         intermediate_representation::{
             FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
@@ -1027,6 +1054,57 @@ mod tests {
                 ERROR_PAYLOAD_SUBSET_MESSAGE.to_owned(),
             ],
             "Each parameter that reaches no error payload must carry its own rejection"
+        );
+    }
+
+    #[test]
+    fn a_public_field_is_rejected() {
+        assert_eq!(
+            rejection_messages("struct Masses { #[validate(finite)] pub bus_mass: f64 }"),
+            vec![PRIVATE_FIELD_MESSAGE.to_owned()],
+            "A public field must be rejected, because it reaches the value past the generated setters"
+        );
+    }
+
+    #[test]
+    fn a_crate_public_field_is_rejected() {
+        assert_eq!(
+            rejection_messages("struct Masses { #[validate(finite)] pub(crate) bus_mass: f64 }"),
+            vec![PRIVATE_FIELD_MESSAGE.to_owned()],
+            "A field that is public inside the crate must be rejected like a public field"
+        );
+    }
+
+    #[test]
+    fn two_public_fields_are_rejected_at_each_field() {
+        assert_eq!(
+            rejection_messages(
+                "struct Masses { #[validate(finite)] pub bus_mass: f64, \
+                 #[validate(finite)] pub sail_mass: f64 }"
+            ),
+            vec![
+                PRIVATE_FIELD_MESSAGE.to_owned(),
+                PRIVATE_FIELD_MESSAGE.to_owned(),
+            ],
+            "Each public field must carry its own rejection"
+        );
+    }
+
+    #[test]
+    fn a_public_newtype_field_is_rejected() {
+        assert_eq!(
+            rejection_messages("struct Wrapper(#[validate(finite)] pub f64);"),
+            vec![PRIVATE_FIELD_MESSAGE.to_owned()],
+            "The public field of a newtype must be rejected like a named public field"
+        );
+    }
+
+    #[test]
+    fn a_public_field_without_a_marker_carries_the_two_rejections() {
+        assert_eq!(
+            rejection_messages("struct Masses { pub bus_mass: f64 }"),
+            vec![PRIVATE_FIELD_MESSAGE.to_owned(), MARKER_MESSAGE.to_owned()],
+            "The visibility and the marker are two independent rules, so one field must report both"
         );
     }
 

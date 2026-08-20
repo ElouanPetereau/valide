@@ -1,0 +1,5 @@
+error: a validated field must be private, because the generated getters and setters guard every access
+ --> tests/ui/fail/public_field.rs:6:5
+  |
+6 |     pub bus_mass: f64,
+  |     ^^^

@@ -97,6 +97,8 @@ fn main() {
 Every field must carry exactly one marker. A field without a marker is a compilation error, so
 a new field never escapes the validation by accident.
 
+Every field must also be private. A public field is a compilation error, because the generated getters and setters are the only path to a validated value.
+
 - `#[validate(range(0.0..=1.0))]` accepts one range expression. The value must be inside it.
 - `#[validate(range(Bound::Excluded(0.0), Bound::Excluded(f64::INFINITY)))]` accepts two bounds.
   Use this form for a range that the range syntax cannot spell, such as an excluded lower bound.
