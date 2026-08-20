@@ -3,15 +3,18 @@
 //! The draft mirrors every field with its documentation and with the attributes that the field forwards,
 //! the serde attributes and the payloads of the field level `draft_attr`.
 //! Every field is public, so a caller can build a draft field by field and test it.
-//! A nested field takes the draft type of its own type, which the associated type projection names.
+//! The draft of an enum mirrors every variant the same way, and every variant of an enum is already public.
+//! A nested field and a nested variant payload take the draft type of their own type, which the associated type projection names.
 
 use proc_macro2::TokenStream;
 use quote::quote;
+use syn::Type;
 
 use crate::{
     expand::{article, doc, validate_trait},
     intermediate_representation::{
-        FieldIntermediateRepresentation, Rule, Shape, TypeIntermediateRepresentation,
+        FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
+        VariantIntermediateRepresentation, VariantKind, VariantRule,
     },
 };
 
@@ -24,7 +27,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     // which the split spelling of an implementation drops
     let generics = &intermediate_representation.generics;
     let (_, _, where_clause) = intermediate_representation.generics.split_for_impl();
-    let struct_doc = doc(&format!(
+    let draft_doc = doc(&format!(
         "Unvalidated draft of {} [`{type_ident}`].",
         article(&type_ident.to_string())
     ));
@@ -41,7 +44,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
         .iter()
         .map(|payload| quote! { #[#payload] });
     let attributes = quote! {
-        #struct_doc
+        #draft_doc
         #serde_derives
         #(#passthrough)*
     };
@@ -80,6 +83,80 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
                 #vis struct #draft_ident #generics (#(#fields),*) #where_clause;
             }
         }
+        Shape::Enum => {
+            let variants = intermediate_representation
+                .variants
+                .iter()
+                .map(draft_variant);
+
+            quote! {
+                #attributes
+                #vis enum #draft_ident #generics #where_clause {
+                    #(#variants)*
+                }
+            }
+        }
+    }
+}
+
+/// Return the declaration that the draft gives to the given `variant`.
+/// A unit variant stays a unit variant and a payload variant holds the draft type of its payload.
+fn draft_variant(variant: &VariantIntermediateRepresentation) -> TokenStream {
+    let ident = &variant.ident;
+    let docs = variant_docs(variant);
+    let passthrough = variant
+        .passthrough
+        .iter()
+        .map(|payload| quote! { #[#payload] });
+    let attributes = quote! {
+        #docs
+        #(#passthrough)*
+    };
+
+    match &variant.kind {
+        VariantKind::Unit => quote! {
+            #attributes
+            #ident,
+        },
+        VariantKind::Payload {
+            ty,
+            rule,
+            docs,
+            passthrough,
+        } => {
+            let payload_passthrough = passthrough.iter().map(|payload| quote! { #[#payload] });
+            let payload_type = payload_type(ty, rule);
+
+            quote! {
+                #attributes
+                #ident(#(#docs)* #(#payload_passthrough)* #payload_type),
+            }
+        }
+    }
+}
+
+/// Return the documentation attributes that the draft gives to the given `variant`.
+/// A variant of the validated type that carries no documentation gets a fallback,
+/// because every variant of the draft is public and must stay documented.
+fn variant_docs(variant: &VariantIntermediateRepresentation) -> TokenStream {
+    if variant.docs.is_empty() {
+        return doc(&format!("The `{}` variant.", variant.ident));
+    }
+    let docs = &variant.docs;
+
+    quote! { #(#docs)* }
+}
+
+/// Return the type that the draft gives to a variant payload of type `ty` under the rule `rule`.
+/// A nested payload holds the draft of its own type, every other payload holds its declared type.
+fn payload_type(ty: &Type, rule: &VariantRule) -> TokenStream {
+    match rule {
+        VariantRule::Nested { .. } => {
+            let validate = validate_trait();
+
+            quote! { <#ty as #validate>::Draft }
+        }
+        VariantRule::Skip => quote! { #ty },
     }
 }
 
@@ -114,7 +191,7 @@ fn field_docs(field: &FieldIntermediateRepresentation) -> TokenStream {
 /// A nested field holds the draft of its own type, every other field holds its declared type.
 fn field_type(field: &FieldIntermediateRepresentation) -> TokenStream {
     let ty = &field.ty;
-    if matches!(field.rule, Rule::Nested { .. }) {
+    if matches!(field.rule, FieldRule::Nested { .. }) {
         let validate = validate_trait();
 
         return quote! { <#ty as #validate>::Draft };

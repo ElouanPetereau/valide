@@ -1,0 +1,5 @@
+error: a validated variant must be a unit variant or a tuple variant with exactly one payload
+ --> tests/ui/fail/enum_struct_variant.rs:6:12
+  |
+6 |     Extend { fraction: f64 },
+  |            ^^^^^^^^^^^^^^^^^

@@ -1,7 +1,7 @@
 //! Intermediate representation that the parsing stage and the expanders share.
 //!
-//! The representation describes the validated type, its fields and the final validations.
-//! Each field carries its validation rule.
+//! The representation describes the validated type, its fields or variants and the final validations.
+//! Each field payload (for a struct) and each variant payload (for an enum) carries its validation rule.
 //! The expanders never look at a syntax tree again.
 
 use proc_macro2::TokenStream;
@@ -14,10 +14,12 @@ pub(crate) enum Shape {
     Named,
     /// Tuple struct with exactly one unnamed field.
     Newtype,
+    /// Enum whose variants are unit variants or tuple variants with exactly one payload.
+    Enum,
 }
 
-/// Validation rule of a single field.
-pub(crate) enum Rule {
+/// Validation rule of a single struct field.
+pub(crate) enum FieldRule {
     /// The value must be inside a range.
     Range {
         /// Tokens of the range, which the generated check uses as its `RangeBounds` implementor.
@@ -36,7 +38,7 @@ pub(crate) enum Rule {
     Skip,
 }
 
-/// One field of a validated type.
+/// One field of a validated struct.
 pub(crate) struct FieldIntermediateRepresentation {
     /// Access to the field on `self`, the name of a named field or the index of a newtype.
     pub(crate) member: Member,
@@ -53,7 +55,69 @@ pub(crate) struct FieldIntermediateRepresentation {
     /// A serde attribute of the field lands here whole, a `draft_attr` attribute lands here without its own name.
     pub(crate) passthrough: Vec<TokenStream>,
     /// Validation rule of the field.
-    pub(crate) rule: Rule,
+    pub(crate) rule: FieldRule,
+}
+
+/// Validation rule of the payload of a variant.
+/// A payload carries no range and no finite rule, because the enum adds no invariant of its own.
+pub(crate) enum VariantRule {
+    /// The type of the payload validates the value with its own `Validate` implementation.
+    Nested {
+        /// Wrapper variant that carries the error of the nested type.
+        wrapper_variant: Ident,
+    },
+    /// The value takes part in no validation at all.
+    Skip,
+}
+
+/// Content of one variant of a validated enum.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The representation of a variant lives for one expansion only, so the size of the payload variant costs nothing"
+)]
+pub(crate) enum VariantKind {
+    /// Variant that carries no payload.
+    Unit,
+    /// Tuple variant that carries exactly one payload.
+    Payload {
+        /// Declared type of the payload.
+        ty: Type,
+        /// Validation rule of the payload.
+        rule: VariantRule,
+        /// Documentation attributes of the payload, which the generator clones onto the draft payload.
+        docs: Vec<Attribute>,
+        /// Payloads that the generator re-emits as attributes of the draft payload.
+        passthrough: Vec<TokenStream>,
+    },
+}
+
+/// One variant of a validated enum.
+pub(crate) struct VariantIntermediateRepresentation {
+    /// Identifier of the variant, which the draft and the error enum reuse.
+    pub(crate) ident: Ident,
+    /// Documentation attributes of the variant, which the generator clones onto the draft variant.
+    pub(crate) docs: Vec<Attribute>,
+    /// Payloads that the generator re-emits as attributes of the draft variant.
+    /// A serde attribute of the variant lands here whole, a `draft_attr` attribute lands here without its own name.
+    pub(crate) passthrough: Vec<TokenStream>,
+    /// Content of the variant.
+    pub(crate) kind: VariantKind,
+}
+
+impl VariantIntermediateRepresentation {
+    /// Return the declared payload type and the wrapper variant of the variant.
+    /// Return nothing for a unit variant and for a payload that takes part in no validation,
+    /// because only a nested payload reaches the generated error enum.
+    pub(crate) fn nested_payload(&self) -> Option<(&Type, &Ident)> {
+        let VariantKind::Payload { ty, rule, .. } = &self.kind else {
+            return None;
+        };
+
+        match rule {
+            VariantRule::Nested { wrapper_variant } => Some((ty, wrapper_variant)),
+            VariantRule::Skip => None,
+        }
+    }
 }
 
 /// One final validation function of a validated type.
@@ -86,8 +150,10 @@ pub(crate) struct TypeIntermediateRepresentation {
     pub(crate) error_enum_is_generic: bool,
     /// Shape of the validated type.
     pub(crate) shape: Shape,
-    /// Fields in declaration order.
+    /// Fields in declaration order, empty for an enum.
     pub(crate) fields: Vec<FieldIntermediateRepresentation>,
+    /// Variants in declaration order, empty for a struct.
+    pub(crate) variants: Vec<VariantIntermediateRepresentation>,
     /// Final validation functions in attribute order.
     pub(crate) final_validations: Vec<FinalValidation>,
     /// Whether the generated draft must derive the serde traits.

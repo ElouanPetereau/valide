@@ -1,0 +1,5 @@
+error: a validated variant must be a unit variant or a tuple variant with exactly one payload
+ --> tests/ui/fail/enum_multi_payload.rs:6:11
+  |
+6 |     Extend(f64, f64),
+  |           ^^^^^^^^^^

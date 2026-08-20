@@ -1,0 +1,5 @@
+error: a variant payload needs exactly one #[validate(...)] marker among nested and skip
+ --> tests/ui/fail/enum_range_payload.rs:6:23
+  |
+6 |     Extend(#[validate(range(0.0..=1.0))] f64),
+  |                       ^^^^^^^^^^^^^^^^

@@ -54,7 +54,8 @@ mod tests {
     use num_traits::Float;
 
     use self::model::{
-        CelestialBodyKind, InertiaMatrixSerializableDraft, InertiaMatrixSerializableField,
+        CelestialBodyDraft, CelestialBodyKind, CelestialBodyKindDraft,
+        InertiaMatrixSerializableDraft, InertiaMatrixSerializableField,
         InertiaMatrixSerializableValidationError, ShadowFractionDraft, SpacecraftDraft,
     };
 
@@ -69,6 +70,14 @@ mod tests {
     /// Valid inertia draft with a diagonal of 2.0, 3.0 and 4.0 kg·m².
     const VALID_INERTIA_DRAFT: InertiaMatrixSerializableDraft<f64> =
         diagonal_inertia_draft(2.0, 3.0, 4.0);
+
+    /// Standard gravitational parameter of the Earth in cubic meters per second squared (m³/s²).
+    const EARTH_GRAVITATIONAL_PARAMETER: f64 = 3.986_004_418e14;
+
+    /// Valid celestial body draft carrying the gravitational parameter of the Earth.
+    const VALID_CELESTIAL_BODY_DRAFT: CelestialBodyDraft = CelestialBodyDraft {
+        gravitational_parameter: EARTH_GRAVITATIONAL_PARAMETER,
+    };
 
     /// Valid spacecraft draft of 1000.0 kg with a 600.0 kg bus, a 300.0 kg sail
     /// and a 12.5 m2 area.
@@ -201,7 +210,7 @@ mod tests {
             area: 12.5,
             inertia_matrix: VALID_INERTIA_DRAFT,
             sun_shadow_fraction: ShadowFractionDraft(0.5),
-            primary_orbited_body: CelestialBodyKind::Earth,
+            primary_orbited_body: CelestialBodyKindDraft::Earth,
         }
     }
 
@@ -221,7 +230,7 @@ mod tests {
                 Type::from(4.0).expect("4.0 is guaranteed to fit in any Float"),
             ),
             sun_shadow_fraction: ShadowFractionDraft(0.5),
-            primary_orbited_body: CelestialBodyKind::Earth,
+            primary_orbited_body: CelestialBodyKindDraft::Earth,
         }
     }
 
@@ -234,6 +243,17 @@ mod tests {
             expected.to_bits(),
             "The {described_as} must be exactly {expected} but was {actual}"
         );
+    }
+
+    /// Return the gravitational parameter of the given `celestial_body_kind` in m³/s².
+    /// The kind must be a custom body, which is the only kind that carries a payload.
+    fn custom_gravitational_parameter(celestial_body_kind: &CelestialBodyKind) -> f64 {
+        match celestial_body_kind {
+            CelestialBodyKind::Custom(celestial_body) => celestial_body.gravitational_parameter(),
+            CelestialBodyKind::Sun | CelestialBodyKind::Earth => {
+                panic!("The tested celestial body kind must be a custom body")
+            }
+        }
     }
 
     /// Write `new_value` in the field that `set_field` selects, on an otherwise valid draft.
@@ -342,6 +362,52 @@ mod tests {
                     }),
                     "The positive infinity must be rejected"
                 );
+            }
+        }
+
+        /// Bounds of the gravitational parameter of a celestial body.
+        mod celestial_body {
+            use crate::tests::model::CelestialBodyDraft;
+
+            use super::super::VALID_CELESTIAL_BODY_DRAFT;
+            use super::super::model::{CelestialBodyField, CelestialBodyValidationError};
+
+            #[test]
+            fn accepts_the_gravitational_parameter_of_the_earth() {
+                assert_eq!(
+                    VALID_CELESTIAL_BODY_DRAFT.validate_gravitational_parameter(),
+                    Ok(()),
+                    "The gravitational parameter of the Earth must be accepted"
+                );
+            }
+
+            #[test]
+            fn accepts_smallest_positive() {
+                assert_eq!(
+                    CelestialBodyDraft {
+                        gravitational_parameter: (f64::MIN_POSITIVE)
+                    }
+                    .validate_gravitational_parameter(),
+                    Ok(()),
+                    "The smallest positive gravitational parameter must be accepted"
+                );
+            }
+
+            #[test]
+            fn rejects_zero_negative_infinity_and_nan() {
+                for rejected_value in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+                    assert_eq!(
+                        CelestialBodyDraft {
+                            gravitational_parameter: rejected_value
+                        }
+                        .validate_gravitational_parameter(),
+                        Err(CelestialBodyValidationError::OutOfRange {
+                            field: CelestialBodyField::GravitationalParameter,
+                            range: "]0.0, +inf[",
+                        }),
+                        "The gravitational parameter {rejected_value} must be rejected"
+                    );
+                }
             }
         }
 
@@ -789,6 +855,57 @@ mod tests {
         }
     }
 
+    /// Delegation of a validated enum to the payload of its variants.
+    mod variant_validation {
+        use crate::tests::model::CelestialBodyDraft;
+
+        use super::VALID_CELESTIAL_BODY_DRAFT;
+        use super::model::{
+            CelestialBodyField, CelestialBodyKindDraft, CelestialBodyKindValidationError,
+            CelestialBodyValidationError,
+        };
+
+        #[test]
+        fn accepts_every_unit_variant() {
+            for (variant_name, draft) in [
+                ("Sun", CelestialBodyKindDraft::Sun),
+                ("Earth", CelestialBodyKindDraft::Earth),
+            ] {
+                assert_eq!(
+                    draft.validate(),
+                    Ok(()),
+                    "The {variant_name} variant carries no rule, so it must always be valid"
+                );
+            }
+        }
+
+        #[test]
+        fn accepts_a_valid_custom_body() {
+            assert_eq!(
+                CelestialBodyKindDraft::Custom(VALID_CELESTIAL_BODY_DRAFT).validate(),
+                Ok(()),
+                "A custom body with a valid gravitational parameter must be accepted"
+            );
+        }
+
+        #[test]
+        fn wraps_the_error_of_a_rejected_custom_body() {
+            assert_eq!(
+                CelestialBodyKindDraft::Custom(CelestialBodyDraft {
+                    gravitational_parameter: 0.0
+                })
+                .validate(),
+                Err(CelestialBodyKindValidationError::CustomValidationError(
+                    CelestialBodyValidationError::OutOfRange {
+                        field: CelestialBodyField::GravitationalParameter,
+                        range: "]0.0, +inf[",
+                    }
+                )),
+                "The custom variant must wrap the error of its own payload type"
+            );
+        }
+    }
+
     /// Direct calls of the final validations on hand built drafts.
     mod final_validation {
         /// Symmetry and physical realizability of an inertia matrix draft.
@@ -1028,16 +1145,19 @@ mod tests {
     /// Construction entry points of the validated types.
     mod construction {
         use super::{
-            VALID_INERTIA_DRAFT, VALID_SPACECRAFT_DRAFT, assert_float_eq, diagonal_inertia_draft,
-            diagonal_inertia_draft_with_precision, spacecraft_draft_with_area,
-            spacecraft_draft_with_masses,
+            EARTH_GRAVITATIONAL_PARAMETER, VALID_CELESTIAL_BODY_DRAFT, VALID_INERTIA_DRAFT,
+            VALID_SPACECRAFT_DRAFT, assert_float_eq, custom_gravitational_parameter,
+            diagonal_inertia_draft, diagonal_inertia_draft_with_precision,
+            spacecraft_draft_with_area, spacecraft_draft_with_masses,
         };
         use core::error::Error as _;
 
-        use crate::Validate as _;
+        use crate::{Validate as _, tests::model::CelestialBodyDraft};
 
         use super::model::{
-            CelestialBodyKind, InertiaMatrixSerializable, InertiaMatrixSerializableField,
+            CelestialBodyField, CelestialBodyKind, CelestialBodyKindDraft,
+            CelestialBodyKindValidationError, CelestialBodyValidationError,
+            InertiaMatrixSerializable, InertiaMatrixSerializableField,
             InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
             ShadowFractionField, ShadowFractionValidationError, Spacecraft, SpacecraftDraft,
             SpacecraftField, SpacecraftMassSumValidationError, SpacecraftValidationError,
@@ -1324,6 +1444,74 @@ mod tests {
                 "The single precision spacecraft error must wrap the error of its nested matrix"
             );
         }
+
+        #[test]
+        fn spacecraft_new_accepts_a_custom_primary_orbited_body() {
+            let draft = SpacecraftDraft {
+                primary_orbited_body: CelestialBodyKindDraft::Custom(VALID_CELESTIAL_BODY_DRAFT),
+                ..VALID_SPACECRAFT_DRAFT
+            };
+            let spacecraft =
+                Spacecraft::new(draft).expect("A valid custom body must build a spacecraft");
+
+            assert_float_eq(
+                custom_gravitational_parameter(spacecraft.primary_orbited_body()),
+                EARTH_GRAVITATIONAL_PARAMETER,
+                "gravitational parameter of the nested custom body",
+            );
+        }
+
+        #[test]
+        fn spacecraft_new_wraps_the_nested_celestial_body_kind_error() {
+            let draft = SpacecraftDraft {
+                primary_orbited_body: CelestialBodyKindDraft::Custom(CelestialBodyDraft {
+                    gravitational_parameter: 0.0,
+                }),
+                ..VALID_SPACECRAFT_DRAFT
+            };
+
+            assert_eq!(
+                Spacecraft::new(draft).err(),
+                Some(
+                    SpacecraftValidationError::PrimaryOrbitedBodyValidationError(
+                        CelestialBodyKindValidationError::CustomValidationError(
+                            CelestialBodyValidationError::OutOfRange {
+                                field: CelestialBodyField::GravitationalParameter,
+                                range: "]0.0, +inf[",
+                            }
+                        )
+                    )
+                ),
+                "The spacecraft error must wrap the error of the nested celestial body kind"
+            );
+        }
+
+        #[test]
+        fn a_wrapper_variant_reports_the_error_of_the_nested_enum_as_its_source() {
+            let draft = SpacecraftDraft {
+                primary_orbited_body: CelestialBodyKindDraft::Custom(CelestialBodyDraft {
+                    gravitational_parameter: 0.0,
+                }),
+                ..VALID_SPACECRAFT_DRAFT
+            };
+            let error = Spacecraft::new(draft)
+                .err()
+                .expect("A custom body with a zero gravitational parameter must be rejected");
+            let source = error
+                .source()
+                .expect("The wrapper variant must report the nested error as its source");
+
+            assert_eq!(
+                source.downcast_ref::<CelestialBodyKindValidationError>(),
+                Some(&CelestialBodyKindValidationError::CustomValidationError(
+                    CelestialBodyValidationError::OutOfRange {
+                        field: CelestialBodyField::GravitationalParameter,
+                        range: "]0.0, +inf[",
+                    }
+                )),
+                "The source of the spacecraft error must be the error of the celestial body kind"
+            );
+        }
     }
 
     /// Conversions between the wrapper, its serde representation and its draft.
@@ -1402,16 +1590,18 @@ mod tests {
     /// Validated setters and draft round trips.
     mod patch {
         use super::{
-            VALID_INERTIA_DRAFT, VALID_SPACECRAFT_DRAFT, assert_float_eq, diagonal_inertia_draft,
-            spacecraft_draft_with_masses,
+            EARTH_GRAVITATIONAL_PARAMETER, VALID_CELESTIAL_BODY_DRAFT, VALID_INERTIA_DRAFT,
+            VALID_SPACECRAFT_DRAFT, assert_float_eq, custom_gravitational_parameter,
+            diagonal_inertia_draft, spacecraft_draft_with_masses,
         };
         use crate::{Patch as _, Validate as _};
 
         use super::model::{
-            CelestialBodyKind, InertiaMatrix, InertiaMatrixRealizabilityValidationError,
-            InertiaMatrixSerializable, InertiaMatrixSerializableField,
-            InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
-            ShadowFractionField, ShadowFractionValidationError, Spacecraft, SpacecraftField,
+            CelestialBodyKind, CelestialBodyKindDraft, InertiaMatrix,
+            InertiaMatrixRealizabilityValidationError, InertiaMatrixSerializable,
+            InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
+            ShadowFraction, ShadowFractionDraft, ShadowFractionField,
+            ShadowFractionValidationError, Spacecraft, SpacecraftField,
             SpacecraftMassSumValidationError, SpacecraftValidationError,
         };
 
@@ -1632,22 +1822,39 @@ mod tests {
         }
 
         #[test]
-        fn skip_field_setter_runs_the_final_validation() {
+        fn spacecraft_set_primary_orbited_body_valid() {
             let mut spacecraft = Spacecraft::new(VALID_SPACECRAFT_DRAFT)
                 .expect("The valid spacecraft draft must build a spacecraft");
+            let custom_body =
+                CelestialBodyKind::new(CelestialBodyKindDraft::Custom(VALID_CELESTIAL_BODY_DRAFT))
+                    .expect("The valid celestial body draft must build a celestial body kind");
+
+            assert_eq!(
+                spacecraft.set_primary_orbited_body(custom_body),
+                Ok(()),
+                "A valid custom body update must be accepted"
+            );
+            assert_float_eq(
+                custom_gravitational_parameter(spacecraft.primary_orbited_body()),
+                EARTH_GRAVITATIONAL_PARAMETER,
+                "gravitational parameter after the accepted update",
+            );
 
             assert_eq!(
                 spacecraft.set_primary_orbited_body(CelestialBodyKind::Sun),
                 Ok(()),
-                "A skipped field update must be accepted while the final validation passes"
+                "A unit variant update must be accepted"
             );
             assert!(
                 matches!(spacecraft.primary_orbited_body(), CelestialBodyKind::Sun),
-                "The skipped field setter must store the new value"
+                "The nested field setter must store the new variant"
             );
+        }
 
+        #[test]
+        fn spacecraft_set_primary_orbited_body_runs_the_final_validation() {
             // The unchecked constructor builds a spacecraft that already breaks the mass sum,
-            // so the patch of the skipped field must report the final validation error
+            // so the patch of the nested body must report the final validation error
             let mut invalid_spacecraft =
                 Spacecraft::from_draft_unchecked(spacecraft_draft_with_masses(100.0, 600.0, 300.0));
 
@@ -1656,7 +1863,7 @@ mod tests {
                 Err(SpacecraftValidationError::MassSumValidationError(
                     SpacecraftMassSumValidationError::MassSmallerThanSum
                 )),
-                "The skipped field setter must run the final validation of the type"
+                "The nested field setter must run the final validation of the type"
             );
         }
 
@@ -1696,8 +1903,16 @@ mod tests {
 
     /// Serde wire format and deserialization.
     mod serde_integration {
-        use super::model::{CelestialBodyKind, InertiaMatrix, ShadowFraction, Spacecraft};
-        use super::{VALID_SPACECRAFT_DRAFT, assert_float_eq, spacecraft_draft_with_area};
+        use crate::tests::model::CelestialBodyDraft;
+
+        use super::model::{
+            CelestialBody, CelestialBodyKind, CelestialBodyKindDraft, InertiaMatrix,
+            ShadowFraction, Spacecraft, SpacecraftDraft,
+        };
+        use super::{
+            EARTH_GRAVITATIONAL_PARAMETER, VALID_CELESTIAL_BODY_DRAFT, VALID_SPACECRAFT_DRAFT,
+            assert_float_eq, custom_gravitational_parameter, spacecraft_draft_with_area,
+        };
 
         /// Build the JSON document of a spacecraft with the given masses and inertia `inertia_xx`.
         /// Every other entry matches the standard valid spacecraft draft.
@@ -1908,6 +2123,58 @@ mod tests {
                     .expect("The Earth variant must serialize"),
                 "\"Earth\"",
                 "The Earth variant must serialize to its own name"
+            );
+            let custom_body = CelestialBodyKind::Custom(
+                CelestialBody::new(CelestialBodyDraft {
+                    gravitational_parameter: 1.0,
+                })
+                .expect("A gravitational parameter of 1.0 must build a celestial body"),
+            );
+            assert_eq!(
+                serde_json::to_string(&custom_body).expect("The Custom variant must serialize"),
+                "{\"Custom\":{\"gravitational_parameter\":1.0}}",
+                "The Custom variant must serialize to its own name and to its payload"
+            );
+        }
+
+        #[test]
+        fn spacecraft_deserialize_rejects_an_invalid_custom_body() {
+            // The draft of the spacecraft carries the wire format of the spacecraft,
+            // so it builds the document that the validation must reject
+            let document = serde_json::to_string(&SpacecraftDraft {
+                primary_orbited_body: CelestialBodyKindDraft::Custom(CelestialBodyDraft {
+                    gravitational_parameter: 0.0,
+                }),
+                ..VALID_SPACECRAFT_DRAFT
+            })
+            .expect("A spacecraft draft must serialize to a document");
+            let message = deserialization_error_message(
+                serde_json::from_str::<Spacecraft>(&document),
+                "spacecraft document holding a custom body with a zero gravitational parameter",
+            );
+
+            assert!(
+                message.contains("range"),
+                "The rejection message must mention the range but was {message}"
+            );
+        }
+
+        #[test]
+        fn spacecraft_custom_body_serialize_deserialize_round_trip() {
+            let spacecraft = Spacecraft::new(SpacecraftDraft {
+                primary_orbited_body: CelestialBodyKindDraft::Custom(VALID_CELESTIAL_BODY_DRAFT),
+                ..VALID_SPACECRAFT_DRAFT
+            })
+            .expect("A valid custom body must build a spacecraft");
+            let document = serde_json::to_string(&spacecraft)
+                .expect("A valid spacecraft must serialize to a document");
+            let restored = serde_json::from_str::<Spacecraft>(&document)
+                .expect("The serialized document must deserialize back");
+
+            assert_float_eq(
+                custom_gravitational_parameter(restored.primary_orbited_body()),
+                EARTH_GRAVITATIONAL_PARAMETER,
+                "round tripped gravitational parameter of the custom body",
             );
         }
 

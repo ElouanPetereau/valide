@@ -1,0 +1,5 @@
+error: #[validate(...)] marks the payload of a variant, not the variant itself
+ --> tests/ui/fail/enum_marker_on_unit.rs:5:5
+  |
+5 |     #[validate(skip)]
+  |     ^^^^^^^^^^^^^^^^^

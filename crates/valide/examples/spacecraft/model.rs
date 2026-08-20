@@ -7,14 +7,32 @@ use num_traits::Float;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use valide::{Patch, Validate};
 
+/// Physical properties of a celestial body that no listed kind covers.
+#[derive(
+    Clone, PartialEq, Serialize, Deserialize, valide_derive::Validate, valide_derive::Patch,
+)]
+#[serde(try_from = "CelestialBodyDraft")]
+pub struct CelestialBody {
+    /// Standard gravitational parameter of the body in cubic meters per second squared (m³/s²).
+    /// The gravitational parameter must be strictly positive and finite.
+    #[validate(range(Bound::Excluded(0.0), Bound::Excluded(f64::INFINITY)))]
+    gravitational_parameter: f64,
+}
+
 /// List of supported celestial body kinds.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+// The custom variant carries a floating point parameter, so the kind carries no `Eq`.
+// The lint that asks for it stays quiet on its own, because the payload type implements no `Eq` either
+#[derive(
+    Clone, PartialEq, Serialize, Deserialize, valide_derive::Validate, valide_derive::Patch,
+)]
+#[serde(try_from = "CelestialBodyKindDraft")]
 pub enum CelestialBodyKind {
     /// Sun.
     Sun,
     /// Earth.
     Earth,
-    // TODO: Add a tuple variant
+    /// Any other body, which carries its own properties.
+    Custom(#[validate(nested)] CelestialBody),
 }
 
 /// Inertia matrix of a body.
@@ -269,8 +287,7 @@ pub struct Spacecraft<Type: RealField + Float = f64> {
     #[validate(nested)]
     sun_shadow_fraction: ShadowFraction,
     /// Celestial body that this spacecraft primarily orbits.
-    // A skip field must not be read by any final validation function
-    #[validate(skip)]
+    #[validate(nested)]
     primary_orbited_body: CelestialBodyKind,
 }
 

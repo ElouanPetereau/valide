@@ -1,8 +1,8 @@
 //! Example that builds a spacecraft from a draft, patches a field through a validated setter and serialize/deserialize it.
 
 use crate::model::{
-    CelestialBodyKind, InertiaMatrixSerializableDraft, ShadowFractionDraft, Spacecraft,
-    SpacecraftDraft,
+    CelestialBodyDraft, CelestialBodyKindDraft, InertiaMatrixSerializableDraft,
+    ShadowFractionDraft, Spacecraft, SpacecraftDraft,
 };
 
 pub mod model;
@@ -25,7 +25,9 @@ fn main() {
             zz: 4.0,
         },
         sun_shadow_fraction: ShadowFractionDraft(0.5),
-        primary_orbited_body: CelestialBodyKind::Earth,
+        primary_orbited_body: CelestialBodyKindDraft::Custom(CelestialBodyDraft {
+            gravitational_parameter: 4.902_800_118e12, // Moon standard gravitational parameter
+        }),
     };
 
     let mut spacecraft =

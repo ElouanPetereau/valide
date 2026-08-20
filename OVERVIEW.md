@@ -143,9 +143,22 @@ A tuple struct with one field is supported. The single field is called `value`, 
 `value()`, the setter is `set_value()`, the validator is `validate_value()` and the field enum
 variant is `Value`.
 
+### Enums
+
+An enum is supported. A variant is a unit variant, or a tuple variant with exactly one payload that carries the marker, such as `Custom(#[validate(nested)] CelestialBody)`.
+A payload accepts `nested` and `skip` only.
+The enum declares no rule of its own, so every rule lives in the payload type and a public variant constructor bypasses nothing.
+
+The error enum holds one wrapper variant per nested variant, named after the variant.
+No field enum exists.
+An enum gets no getter, because a caller matches on the public variants.
+`Patch` generates no setter, because a patch of an enum replaces the whole variant, which `new` already validates.
+The draft enum takes the serde representation of serde itself, the external tagging.
+Forward another representation with `#[draft_attr(serde(...))]`.
+
 ## Limitations
 
-- A validated type must be a struct. An enum and a union are rejected with a clear error.
+- A validated type must be a struct or an enum, and a union is rejected with a clear error. A variant must be a unit variant or a tuple variant with exactly one `nested` or `skip` payload.
 - A tuple struct must have exactly one field.
 - The by value getter uses the written token of the field type, so an alias to a primitive gets a getter that returns a reference.
 - `Validate::from_draft_unchecked` skips the validation. It exists for the generated code.

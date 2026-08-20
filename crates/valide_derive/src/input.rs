@@ -9,15 +9,16 @@ use core::ptr;
 use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
 use quote::{ToTokens as _, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Error, Expr, Field, Fields, GenericParam, Generics, Ident, Index,
-    Member, Meta, MetaList, Path, Result, Token, parse::ParseStream, punctuated::Punctuated,
-    spanned::Spanned as _,
+    Attribute, Data, DataStruct, DeriveInput, Error, Expr, Field, Fields, GenericParam, Generics,
+    Ident, Index, Member, Meta, MetaList, Path, Result, Token, Variant, parse::ParseStream,
+    punctuated::Punctuated, spanned::Spanned as _,
 };
 
 use crate::{
     intermediate_representation::{
-        FieldIntermediateRepresentation, FinalValidation, Rule, Shape,
-        TypeIntermediateRepresentation,
+        FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
+        TypeIntermediateRepresentation, VariantIntermediateRepresentation, VariantKind,
+        VariantRule,
     },
     naming,
     range_text::{self, BoundKind},
@@ -56,6 +57,23 @@ const NEWTYPE_LOGICAL_NAME: &str = "value";
 /// Message that describes the markers of a field.
 const MARKER_MESSAGE: &str =
     "a field needs exactly one #[validate(...)] marker among range(...), finite, nested and skip";
+/// Message that describes the markers of a variant payload.
+const PAYLOAD_MARKER_MESSAGE: &str =
+    "a variant payload needs exactly one #[validate(...)] marker among nested and skip";
+/// Message of the rejection of a marker that sits on a variant instead of the payload of the variant.
+const VARIANT_MARKER_MESSAGE: &str =
+    "#[validate(...)] marks the payload of a variant, not the variant itself";
+/// Message that describes the accepted shapes of a variant.
+const VARIANT_SHAPE_MESSAGE: &str =
+    "a validated variant must be a unit variant or a tuple variant with exactly one payload";
+/// Message of the rejection of a union.
+const UNION_MESSAGE: &str = "a validated type must be a struct or an enum, not a union";
+/// Message of the rejection of a `final_validation` attribute on a field.
+const FIELD_FINAL_VALIDATION_MESSAGE: &str =
+    "#[final_validation(...)] describes a whole type, not a field";
+/// Message of the rejection of a `final_validation` attribute on a variant.
+const VARIANT_FINAL_VALIDATION_MESSAGE: &str =
+    "#[final_validation(...)] describes a whole type, not a variant";
 /// Message that describes the arguments of a `range` marker.
 const RANGE_MESSAGE: &str =
     "#[validate(range(...))] takes one range expression or two core::ops::Bound values";
@@ -75,16 +93,36 @@ const ERROR_PAYLOAD_SUBSET_MESSAGE: &str = "the generated error enum must carry 
 /// Return every grammar error found. A single compilation reports all of them.
 pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepresentation> {
     require_supported_type(derive_input)?;
-    let (shape, raw_fields) = struct_fields(derive_input)?;
 
     let mut errors: Vec<Error> = Vec::new();
     let mut fields: Vec<FieldIntermediateRepresentation> = Vec::new();
-    for (position, field) in raw_fields.into_iter().enumerate() {
-        match parse_field(field, position) {
-            Ok(field_ir) => fields.push(field_ir),
-            Err(error) => errors.push(error),
+    let mut variants: Vec<VariantIntermediateRepresentation> = Vec::new();
+    let shape = match &derive_input.data {
+        Data::Struct(data_struct) => {
+            let (shape, raw_fields) = struct_fields(&derive_input.ident, data_struct)?;
+            for (position, field) in raw_fields.into_iter().enumerate() {
+                match parse_field(field, position) {
+                    Ok(field_ir) => fields.push(field_ir),
+                    Err(error) => errors.push(error),
+                }
+            }
+
+            shape
         }
-    }
+        Data::Enum(data_enum) => {
+            for variant in &data_enum.variants {
+                match parse_variant(variant) {
+                    Ok(variant_ir) => variants.push(variant_ir),
+                    Err(error) => errors.push(error),
+                }
+            }
+
+            Shape::Enum
+        }
+        Data::Union(data_union) => {
+            return Err(Error::new_spanned(data_union.union_token, UNION_MESSAGE));
+        }
+    };
 
     let mut final_validations: Vec<FinalValidation> = Vec::new();
     let mut draft_passthrough: Vec<TokenStream> = Vec::new();
@@ -95,21 +133,25 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
                 Err(error) => errors.push(error),
             }
         } else if attribute.path().is_ident(DRAFT_ATTR_ATTRIBUTE) {
-            match draft_attr_payload(attribute) {
+            match draft_attr_tokens(attribute) {
                 Ok(payload) => draft_passthrough.push(payload),
                 Err(error) => errors.push(error),
             }
         }
     }
 
-    if let Err(error) = check_wrapper_variants(&fields, &final_validations) {
+    if let Err(error) = check_wrapper_variants(&fields, &variants, &final_validations) {
         errors.push(error);
     }
-    if let Err(error) = check_field_variants(&fields) {
+    if let Err(error) = check_field_enum_variants(&fields) {
         errors.push(error);
     }
-    let used_parameters =
-        used_error_parameters(&derive_input.generics, &fields, &final_validations);
+    let used_parameters = used_error_parameters(
+        &derive_input.generics,
+        &fields,
+        &variants,
+        &final_validations,
+    );
     if let Err(error) = check_error_parameters(&derive_input.generics, &used_parameters) {
         errors.push(error);
     }
@@ -134,6 +176,7 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
         error_enum_is_generic,
         shape,
         fields,
+        variants,
         final_validations,
         emit_draft_serde: has_serde_try_from(&derive_input.attrs),
         draft_passthrough,
@@ -168,24 +211,12 @@ fn require_supported_type(derive_input: &DeriveInput) -> Result<()> {
     Ok(())
 }
 
-/// Return the shape of the given `derive_input` with its fields in declaration order.
-fn struct_fields(derive_input: &DeriveInput) -> Result<(Shape, Vec<&Field>)> {
-    let data_struct = match &derive_input.data {
-        Data::Struct(data_struct) => data_struct,
-        Data::Enum(data_enum) => {
-            return Err(Error::new_spanned(
-                data_enum.enum_token,
-                "a validated type must be a struct, not an enum",
-            ));
-        }
-        Data::Union(data_union) => {
-            return Err(Error::new_spanned(
-                data_union.union_token,
-                "a validated type must be a struct, not a union",
-            ));
-        }
-    };
-
+/// Return the shape of the given `data_struct` with its fields in declaration order.
+/// The struct is called `type_ident`, which carries the diagnostic of a struct without a field.
+fn struct_fields<'data>(
+    type_ident: &Ident,
+    data_struct: &'data DataStruct,
+) -> Result<(Shape, Vec<&'data Field>)> {
     match &data_struct.fields {
         Fields::Named(named_fields) => Ok((Shape::Named, named_fields.named.iter().collect())),
         Fields::Unnamed(unnamed_fields) => {
@@ -199,7 +230,7 @@ fn struct_fields(derive_input: &DeriveInput) -> Result<(Shape, Vec<&Field>)> {
             }
         }
         Fields::Unit => Err(Error::new_spanned(
-            &derive_input.ident,
+            type_ident,
             "a validated type must have at least one field",
         )),
     }
@@ -240,11 +271,11 @@ fn parse_field(field: &Field, position: usize) -> Result<FieldIntermediateRepres
             // so the serde attributes of a field must reach the draft field
             passthrough.push(attribute.meta.to_token_stream());
         } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
-            passthrough.push(draft_attr_payload(attribute)?);
+            passthrough.push(draft_attr_tokens(attribute)?);
         } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
             return Err(Error::new_spanned(
                 attribute,
-                "#[final_validation(...)] describes a whole type, not a field",
+                FIELD_FINAL_VALIDATION_MESSAGE,
             ));
         }
     }
@@ -260,12 +291,12 @@ fn parse_field(field: &Field, position: usize) -> Result<FieldIntermediateRepres
     // The validator and the setter of every field derive their names from the logical name,
     // so the check runs before the rule tells whether the field also carries a variant
     let field_variant = naming::field_variant(&logical_name, name_span)?;
-    let rule = parse_marker(marker, &logical_name, name_span)?;
+    let rule = parse_field_marker(marker, &logical_name, name_span)?;
     // Only a range or a finite field can name itself inside an error,
     // so only those two rules get a field enum variant
     let variant = match &rule {
-        Rule::Range { .. } | Rule::Finite => Some(field_variant),
-        Rule::Nested { .. } | Rule::Skip => None,
+        FieldRule::Range { .. } | FieldRule::Finite => Some(field_variant),
+        FieldRule::Nested { .. } | FieldRule::Skip => None,
     };
 
     Ok(FieldIntermediateRepresentation {
@@ -281,7 +312,11 @@ fn parse_field(field: &Field, position: usize) -> Result<FieldIntermediateRepres
 
 /// Parse the single marker of the given `validate` `attribute` into the rule of a field.
 /// The field is called `logical_name`, with the name span `name_span`.
-fn parse_marker(attribute: &Attribute, logical_name: &str, name_span: Span) -> Result<Rule> {
+fn parse_field_marker(
+    attribute: &Attribute,
+    logical_name: &str,
+    name_span: Span,
+) -> Result<FieldRule> {
     let markers = attribute.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
     let mut markers = markers.into_iter();
     let Some(marker) = markers.next() else {
@@ -293,7 +328,7 @@ fn parse_marker(attribute: &Attribute, logical_name: &str, name_span: Span) -> R
 
     if let Meta::List(list) = &marker {
         if list.path.is_ident(RANGE_MARKER) {
-            return parse_range(list);
+            return parse_field_range(list);
         }
 
         return Err(Error::new_spanned(&list.path, MARKER_MESSAGE));
@@ -302,22 +337,22 @@ fn parse_marker(attribute: &Attribute, logical_name: &str, name_span: Span) -> R
         return Err(Error::new_spanned(&marker, MARKER_MESSAGE));
     };
     if path.is_ident(FINITE_MARKER) {
-        return Ok(Rule::Finite);
+        return Ok(FieldRule::Finite);
     }
     if path.is_ident(NESTED_MARKER) {
-        return Ok(Rule::Nested {
+        return Ok(FieldRule::Nested {
             wrapper_variant: naming::nested_wrapper_variant(logical_name, name_span)?,
         });
     }
     if path.is_ident(SKIP_MARKER) {
-        return Ok(Rule::Skip);
+        return Ok(FieldRule::Skip);
     }
 
     Err(Error::new_spanned(path, MARKER_MESSAGE))
 }
 
 /// Parse the arguments of the given `range` marker `list` into the rule of a field.
-fn parse_range(list: &MetaList) -> Result<Rule> {
+fn parse_field_range(list: &MetaList) -> Result<FieldRule> {
     let arguments = list.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
     let mut arguments = arguments.iter();
     let bounds = (arguments.next(), arguments.next(), arguments.next());
@@ -327,7 +362,7 @@ fn parse_range(list: &MetaList) -> Result<Rule> {
             return Err(Error::new_spanned(single, RANGE_MESSAGE));
         };
 
-        return Ok(Rule::Range {
+        return Ok(FieldRule::Range {
             check_tokens: range.to_token_stream(),
             text: range_text::sugared_text(range),
         });
@@ -336,7 +371,7 @@ fn parse_range(list: &MetaList) -> Result<Rule> {
         let lower_bound = parse_bound(lower)?;
         let upper_bound = parse_bound(upper)?;
 
-        return Ok(Rule::Range {
+        return Ok(FieldRule::Range {
             check_tokens: quote! { (#lower, #upper) },
             text: range_text::bound_pair_text(&lower_bound, &upper_bound),
         });
@@ -385,6 +420,129 @@ fn last_segment_is(path: &Path, segment_name: &str) -> bool {
     last_segment.ident == segment_name
 }
 
+/// Parse the given `variant` of a validated enum into its representation.
+/// The attributes of the variant reach the draft variant, and a marker belongs to the payload only.
+fn parse_variant(variant: &Variant) -> Result<VariantIntermediateRepresentation> {
+    let mut docs: Vec<Attribute> = Vec::new();
+    let mut passthrough: Vec<TokenStream> = Vec::new();
+    for attribute in &variant.attrs {
+        let path = attribute.path();
+        if path.is_ident(DOC_ATTRIBUTE) {
+            docs.push(attribute.clone());
+        } else if path.is_ident(SERDE_ATTRIBUTE) {
+            // The draft carries the wire format of the enum behind a deserialization validation,
+            // so the serde attributes of a variant must reach the draft variant
+            passthrough.push(attribute.meta.to_token_stream());
+        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
+            passthrough.push(draft_attr_tokens(attribute)?);
+        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
+            return Err(Error::new_spanned(attribute, VARIANT_MARKER_MESSAGE));
+        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
+            return Err(Error::new_spanned(
+                attribute,
+                VARIANT_FINAL_VALIDATION_MESSAGE,
+            ));
+        }
+    }
+    let kind = parse_variant_kind(variant)?;
+
+    Ok(VariantIntermediateRepresentation {
+        ident: variant.ident.clone(),
+        docs,
+        passthrough,
+        kind,
+    })
+}
+
+/// Parse the fields of the given `variant` into the content of the variant.
+/// A unit variant carries nothing and a tuple variant carries exactly one payload.
+fn parse_variant_kind(variant: &Variant) -> Result<VariantKind> {
+    let unnamed_fields = match &variant.fields {
+        Fields::Unit => return Ok(VariantKind::Unit),
+        Fields::Unnamed(unnamed_fields) => unnamed_fields,
+        Fields::Named(named_fields) => {
+            return Err(Error::new_spanned(named_fields, VARIANT_SHAPE_MESSAGE));
+        }
+    };
+    let mut unnamed = unnamed_fields.unnamed.iter();
+    let (Some(payload), None) = (unnamed.next(), unnamed.next()) else {
+        return Err(Error::new_spanned(unnamed_fields, VARIANT_SHAPE_MESSAGE));
+    };
+
+    parse_payload(payload, &variant.ident)
+}
+
+/// Parse the single `payload` of the tuple variant called `variant_ident` into the content of the variant.
+/// The name of the variant builds the wrapper variant of a nested payload.
+fn parse_payload(payload: &Field, variant_ident: &Ident) -> Result<VariantKind> {
+    let mut docs: Vec<Attribute> = Vec::new();
+    let mut passthrough: Vec<TokenStream> = Vec::new();
+    let mut markers: Vec<&Attribute> = Vec::new();
+    for attribute in &payload.attrs {
+        let path = attribute.path();
+        if path.is_ident(DOC_ATTRIBUTE) {
+            docs.push(attribute.clone());
+        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
+            markers.push(attribute);
+        } else if path.is_ident(SERDE_ATTRIBUTE) {
+            passthrough.push(attribute.meta.to_token_stream());
+        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
+            passthrough.push(draft_attr_tokens(attribute)?);
+        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
+            return Err(Error::new_spanned(
+                attribute,
+                FIELD_FINAL_VALIDATION_MESSAGE,
+            ));
+        }
+    }
+
+    let mut markers = markers.into_iter();
+    let Some(marker) = markers.next() else {
+        return Err(Error::new(payload.ty.span(), PAYLOAD_MARKER_MESSAGE));
+    };
+    if let Some(extra_marker) = markers.next() {
+        return Err(Error::new_spanned(extra_marker, PAYLOAD_MARKER_MESSAGE));
+    }
+    let rule = parse_payload_marker(marker, variant_ident)?;
+
+    Ok(VariantKind::Payload {
+        ty: payload.ty.clone(),
+        rule,
+        docs,
+        passthrough,
+    })
+}
+
+/// Parse the single marker of the given `validate` `attribute` into the rule of a variant payload.
+/// The payload belongs to the variant called `variant_ident`.
+/// A payload accepts the two markers that delegate a rule, because the enum declares no rule of its own.
+fn parse_payload_marker(attribute: &Attribute, variant_ident: &Ident) -> Result<VariantRule> {
+    let markers = attribute.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+    let mut markers = markers.into_iter();
+    let Some(marker) = markers.next() else {
+        return Err(Error::new_spanned(attribute, PAYLOAD_MARKER_MESSAGE));
+    };
+    if let Some(extra_marker) = markers.next() {
+        return Err(Error::new_spanned(extra_marker, PAYLOAD_MARKER_MESSAGE));
+    }
+    let Meta::Path(path) = &marker else {
+        return Err(Error::new_spanned(&marker, PAYLOAD_MARKER_MESSAGE));
+    };
+    if path.is_ident(NESTED_MARKER) {
+        return Ok(VariantRule::Nested {
+            wrapper_variant: naming::nested_wrapper_variant(
+                &variant_ident.to_string(),
+                variant_ident.span(),
+            )?,
+        });
+    }
+    if path.is_ident(SKIP_MARKER) {
+        return Ok(VariantRule::Skip);
+    }
+
+    Err(Error::new_spanned(path, PAYLOAD_MARKER_MESSAGE))
+}
+
 /// Parse the given `final_validation` `attribute` into its representation.
 fn parse_final_validation(attribute: &Attribute) -> Result<FinalValidation> {
     let (fn_ident, error_ty) = attribute.parse_args_with(final_validation_arguments)?;
@@ -419,8 +577,8 @@ fn final_validation_arguments(input: ParseStream<'_>) -> Result<(Ident, Path)> {
     Ok((function, error_type))
 }
 
-/// Return the payload of the given `draft_attr` `attribute`.
-fn draft_attr_payload(attribute: &Attribute) -> Result<TokenStream> {
+/// Return the tokens that the given `draft_attr` `attribute` carries.
+fn draft_attr_tokens(attribute: &Attribute) -> Result<TokenStream> {
     let Meta::List(list) = &attribute.meta else {
         return Err(Error::new_spanned(attribute, DRAFT_ATTR_MESSAGE));
     };
@@ -454,19 +612,20 @@ fn has_serde_try_from(attributes: &[Attribute]) -> bool {
     })
 }
 
-/// Return the generic parameters of `generics` that reach an error payload of `fields` or of `final_validations`.
+/// Return the generic parameters of `generics` that reach an error payload of `fields`, of `variants` or of `final_validations`.
 /// The returned parameters keep their declaration order.
 /// An empty result means that the generated error enum stays free of every parameter.
 fn used_error_parameters<'generics>(
     generics: &'generics Generics,
     fields: &[FieldIntermediateRepresentation],
+    variants: &[VariantIntermediateRepresentation],
     final_validations: &[FinalValidation],
 ) -> Vec<&'generics GenericParam> {
     generics
         .params
         .iter()
         .filter(|&parameter| {
-            error_payload_types(fields, final_validations)
+            error_payload_types(fields, variants, final_validations)
                 .any(|payload_type| names_parameter(payload_type, parameter))
         })
         .collect()
@@ -474,20 +633,29 @@ fn used_error_parameters<'generics>(
 
 /// Return the tokens of every type that reaches the generated error enum of a validated type.
 /// A nested field contributes its declared type, whose own error the enum wraps.
+/// A nested variant payload contributes its declared type the same way.
 /// A final validation contributes the error type that it returns.
 fn error_payload_types(
     fields: &[FieldIntermediateRepresentation],
+    variants: &[VariantIntermediateRepresentation],
     final_validations: &[FinalValidation],
 ) -> impl Iterator<Item = TokenStream> {
     let nested_types = fields
         .iter()
-        .filter(|field| matches!(field.rule, Rule::Nested { .. }))
+        .filter(|field| matches!(field.rule, FieldRule::Nested { .. }))
         .map(|field| field.ty.to_token_stream());
+    let nested_payload_types = variants.iter().filter_map(|variant| {
+        variant
+            .nested_payload()
+            .map(|(payload_type, _)| payload_type.to_token_stream())
+    });
     let final_validation_error_types = final_validations
         .iter()
         .map(|final_validation| final_validation.error_ty.to_token_stream());
 
-    nested_types.chain(final_validation_error_types)
+    nested_types
+        .chain(nested_payload_types)
+        .chain(final_validation_error_types)
 }
 
 /// Token that the parameter walk read just before the token it reads now.
@@ -577,7 +745,7 @@ fn check_error_parameters(generics: &Generics, used_parameters: &[&GenericParam]
 }
 
 /// Check that the field enum variants generated for `fields` are all distinct.
-fn check_field_variants(fields: &[FieldIntermediateRepresentation]) -> Result<()> {
+fn check_field_enum_variants(fields: &[FieldIntermediateRepresentation]) -> Result<()> {
     let variants: Vec<Ident> = fields
         .iter()
         .filter_map(|field| field.variant.clone())
@@ -598,29 +766,35 @@ fn check_field_variants(fields: &[FieldIntermediateRepresentation]) -> Result<()
     Err(error)
 }
 
-/// Check that the wrapper variants generated for `fields` and `final_validations` are all distinct.
+/// Check that the wrapper variants generated for `fields`, for `variants` and for `final_validations` are all distinct.
 fn check_wrapper_variants(
     fields: &[FieldIntermediateRepresentation],
+    variants: &[VariantIntermediateRepresentation],
     final_validations: &[FinalValidation],
 ) -> Result<()> {
-    let mut variants: Vec<Ident> = Vec::new();
+    let mut wrapper_variants: Vec<Ident> = Vec::new();
     for field in fields {
-        if let Rule::Nested { wrapper_variant } = &field.rule {
-            variants.push(wrapper_variant.clone());
+        if let FieldRule::Nested { wrapper_variant } = &field.rule {
+            wrapper_variants.push(wrapper_variant.clone());
+        }
+    }
+    for variant in variants {
+        if let Some((_, wrapper_variant)) = variant.nested_payload() {
+            wrapper_variants.push(wrapper_variant.clone());
         }
     }
     for final_validation in final_validations {
-        variants.push(final_validation.wrapper_variant.clone());
+        wrapper_variants.push(final_validation.wrapper_variant.clone());
     }
 
-    let Some((first, second)) = naming::first_collision(&variants) else {
+    let Some((first, second)) = naming::first_collision(&wrapper_variants) else {
         return Ok(());
     };
     let mut error = Error::new(
         second.span(),
         format!("the generated error variant `{second}` would be generated twice"),
     );
-    // A field and a final validation reach this check in their own order,
+    // A field, a variant and a final validation reach this check in their own order,
     // so the note claims no order between the two spans
     error.combine(Error::new(
         first.span(),
@@ -636,10 +810,15 @@ mod tests {
     use syn::{DeriveInput, Generics, Member, parse_str};
 
     use crate::intermediate_representation::{
-        FieldIntermediateRepresentation, FinalValidation, Rule,
+        FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
+        TypeIntermediateRepresentation, VariantKind, VariantRule,
     };
 
-    use super::{ERROR_PAYLOAD_SUBSET_MESSAGE, parameter_name, parse, used_error_parameters};
+    use super::{
+        ERROR_PAYLOAD_SUBSET_MESSAGE, PAYLOAD_MARKER_MESSAGE, UNION_MESSAGE,
+        VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE, parameter_name, parse,
+        used_error_parameters,
+    };
 
     /// Build an identifier from `name`, with the call site span.
     fn ident(name: &str) -> Ident {
@@ -655,7 +834,7 @@ mod tests {
             ty: parse_str(declared_type).expect("the tested field type must parse"),
             docs: Vec::new(),
             passthrough: Vec::new(),
-            rule: Rule::Nested {
+            rule: FieldRule::Nested {
                 wrapper_variant: ident("InnerValidationError"),
             },
         }
@@ -680,9 +859,55 @@ mod tests {
         let parsed_generics: Generics =
             parse_str(generics).expect("the tested generics must parse");
 
-        used_error_parameters(&parsed_generics, fields, final_validations)
+        used_error_parameters(&parsed_generics, fields, &[], final_validations)
             .into_iter()
             .map(|parameter| parameter_name(parameter).to_string())
+            .collect::<Vec<String>>()
+            .join(", ")
+    }
+
+    /// Return the representation that the parsing of `source` produces.
+    /// The source must parse as a derive input and the derive must accept it.
+    fn accepted(source: &str) -> TypeIntermediateRepresentation {
+        let derive_input: DeriveInput =
+            parse_str(source).expect("the tested derive input must parse");
+
+        parse(&derive_input).expect("the tested derive input must be accepted")
+    }
+
+    /// Return the messages of the rejections that the parsing of `source` produces.
+    /// The source must parse as a derive input and the derive must reject it.
+    fn rejection_messages(source: &str) -> Vec<String> {
+        let derive_input: DeriveInput =
+            parse_str(source).expect("the tested derive input must parse");
+        let Err(error) = parse(&derive_input) else {
+            panic!("the tested derive input must be rejected");
+        };
+
+        error
+            .into_iter()
+            .map(|single_error| single_error.to_string())
+            .collect()
+    }
+
+    /// Return the description of every variant of `intermediate_representation`, in declaration order.
+    /// A variant reads as its name, then its content, then the wrapper variant of a nested payload.
+    /// The descriptions come joined by a comma.
+    fn variant_summary(intermediate_representation: &TypeIntermediateRepresentation) -> String {
+        intermediate_representation
+            .variants
+            .iter()
+            .map(|variant| match &variant.kind {
+                VariantKind::Unit => format!("{} unit", variant.ident),
+                VariantKind::Payload {
+                    rule: VariantRule::Skip,
+                    ..
+                } => format!("{} skip", variant.ident),
+                VariantKind::Payload {
+                    rule: VariantRule::Nested { wrapper_variant },
+                    ..
+                } => format!("{} nested {wrapper_variant}", variant.ident),
+            })
             .collect::<Vec<String>>()
             .join(", ")
     }
@@ -765,12 +990,8 @@ mod tests {
 
     #[test]
     fn a_generic_struct_without_a_bound_is_accepted() {
-        let derive_input: DeriveInput =
-            parse_str("struct Wrapper<Number> { #[validate(skip)] value: Number }")
-                .expect("the tested derive input must parse");
-
         let intermediate_representation =
-            parse(&derive_input).expect("a generic struct without a bound must be accepted");
+            accepted("struct Wrapper<Number> { #[validate(skip)] value: Number }");
 
         assert_eq!(
             intermediate_representation.generics.params.len(),
@@ -785,12 +1006,8 @@ mod tests {
 
     #[test]
     fn every_parameter_that_reaches_an_error_payload_makes_the_error_enum_generic() {
-        let derive_input: DeriveInput =
-            parse_str("struct Wrapper<Number> { #[validate(nested)] inner: Inner<Number> }")
-                .expect("the tested derive input must parse");
-
-        let intermediate_representation = parse(&derive_input)
-            .expect("a parameter that reaches an error payload must be accepted");
+        let intermediate_representation =
+            accepted("struct Wrapper<Number> { #[validate(nested)] inner: Inner<Number> }");
 
         assert!(
             intermediate_representation.error_enum_is_generic,
@@ -800,26 +1017,160 @@ mod tests {
 
     #[test]
     fn a_proper_subset_of_the_parameters_is_rejected_at_each_unused_parameter() {
-        let derive_input: DeriveInput = parse_str(
-            "struct Wrapper<Number, Other, Extra> { #[validate(nested)] inner: Inner<Number> }",
-        )
-        .expect("the tested derive input must parse");
-
-        let Err(error) = parse(&derive_input) else {
-            panic!("a proper subset of the parameters must be rejected");
-        };
-        let messages: Vec<String> = error
-            .into_iter()
-            .map(|single_error| single_error.to_string())
-            .collect();
-
         assert_eq!(
-            messages,
+            rejection_messages(
+                "struct Wrapper<Number, Other, Extra> { #[validate(nested)] inner: Inner<Number> }"
+            ),
             vec![
                 ERROR_PAYLOAD_SUBSET_MESSAGE.to_owned(),
                 ERROR_PAYLOAD_SUBSET_MESSAGE.to_owned(),
             ],
             "Each parameter that reaches no error payload must carry its own rejection"
+        );
+    }
+
+    #[test]
+    fn an_enum_with_a_unit_a_skip_and_a_nested_variant_is_accepted() {
+        let intermediate_representation = accepted(
+            "enum Command { Halt, Raw(#[validate(skip)] u8), Extend(#[validate(nested)] Fraction) }",
+        );
+
+        assert!(
+            matches!(intermediate_representation.shape, Shape::Enum),
+            "An enum must carry the enum shape"
+        );
+        assert!(
+            intermediate_representation.fields.is_empty(),
+            "An enum must carry no field at all"
+        );
+        assert_eq!(
+            variant_summary(&intermediate_representation),
+            "Halt unit, Raw skip, Extend nested ExtendValidationError",
+            "Every variant must keep its declaration order, its rule and its wrapper variant"
+        );
+    }
+
+    #[test]
+    fn an_enum_of_unit_variants_carries_no_wrapper_variant() {
+        let intermediate_representation = accepted("enum CelestialBodyKind { Sun, Earth }");
+
+        assert!(
+            intermediate_representation
+                .variants
+                .iter()
+                .all(|variant| variant.nested_payload().is_none()),
+            "An enum of unit variants must reach no wrapper variant, which leaves the generated error enum empty"
+        );
+    }
+
+    #[test]
+    fn a_parameter_that_reaches_a_variant_payload_makes_the_error_enum_generic() {
+        let intermediate_representation = accepted(
+            "enum Sample<Number> { Missing, Measured(#[validate(nested)] Measurement<Number>) }",
+        );
+
+        assert!(
+            intermediate_representation.error_enum_is_generic,
+            "A parameter that reaches a variant payload must make the error enum generic"
+        );
+    }
+
+    #[test]
+    fn a_parameter_that_reaches_no_variant_payload_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "enum Sample<Number, Other> { Measured(#[validate(nested)] Measurement<Number>) }"
+            ),
+            vec![ERROR_PAYLOAD_SUBSET_MESSAGE.to_owned()],
+            "The parameter that reaches no variant payload must carry its own rejection"
+        );
+    }
+
+    #[test]
+    fn a_union_is_rejected() {
+        assert_eq!(
+            rejection_messages("union Number { floating: f64, integer: u64 }"),
+            vec![UNION_MESSAGE.to_owned()],
+            "A union must be rejected, because it holds no validated shape"
+        );
+    }
+
+    #[test]
+    fn a_variant_with_named_fields_is_rejected() {
+        assert_eq!(
+            rejection_messages("enum Command { Extend { fraction: f64 } }"),
+            vec![VARIANT_SHAPE_MESSAGE.to_owned()],
+            "A variant with named fields must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_variant_with_two_payloads_is_rejected() {
+        assert_eq!(
+            rejection_messages("enum Command { Extend(f64, f64) }"),
+            vec![VARIANT_SHAPE_MESSAGE.to_owned()],
+            "A tuple variant with more than one payload must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_variant_without_a_payload_is_rejected() {
+        assert_eq!(
+            rejection_messages("enum Command { Extend() }"),
+            vec![VARIANT_SHAPE_MESSAGE.to_owned()],
+            "A tuple variant without a payload must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_range_marker_on_a_payload_is_rejected() {
+        assert_eq!(
+            rejection_messages("enum Command { Extend(#[validate(range(0.0..=1.0))] f64) }"),
+            vec![PAYLOAD_MARKER_MESSAGE.to_owned()],
+            "A range marker on a payload must be rejected, because a variant declares no rule"
+        );
+    }
+
+    #[test]
+    fn a_finite_marker_on_a_payload_is_rejected() {
+        assert_eq!(
+            rejection_messages("enum Command { Extend(#[validate(finite)] f64) }"),
+            vec![PAYLOAD_MARKER_MESSAGE.to_owned()],
+            "A finite marker on a payload must be rejected, because a variant declares no rule"
+        );
+    }
+
+    #[test]
+    fn a_payload_without_a_marker_is_rejected() {
+        assert_eq!(
+            rejection_messages("enum Command { Extend(f64) }"),
+            vec![PAYLOAD_MARKER_MESSAGE.to_owned()],
+            "A payload without a marker must be rejected, so no payload escapes the grammar"
+        );
+    }
+
+    #[test]
+    fn a_marker_on_a_unit_variant_is_rejected() {
+        assert_eq!(
+            rejection_messages("enum Command { #[validate(skip)] Halt }"),
+            vec![VARIANT_MARKER_MESSAGE.to_owned()],
+            "A marker on a unit variant must be rejected, because the variant carries no payload"
+        );
+    }
+
+    #[test]
+    fn a_variant_wrapper_that_collides_with_a_final_validation_wrapper_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "#[final_validation(validate_extend, error = ExtendError)] \
+                 enum Command { Extend(#[validate(nested)] Fraction) }"
+            ),
+            vec![
+                "the generated error variant `ExtendValidationError` would be generated twice"
+                    .to_owned(),
+                "the same `ExtendValidationError` variant also comes from here".to_owned(),
+            ],
+            "A variant wrapper and a final validation wrapper that share a name must be rejected"
         );
     }
 }

@@ -1,8 +1,8 @@
 //! Generation of the validation error enum of a validated type.
 //!
 //! The generator emits the shared field shaped variants that carry the failing field.
-//! It emits one wrapper variant per final validation and one per nested field.
-//! A variant only exists when at least one field or one attribute can produce it.
+//! It emits one wrapper variant per nested variant of an enum, per final validation and per nested field.
+//! A variant only exists when at least one field, one variant or one attribute can produce it.
 //! A wrapper variant reports the error it holds as its source.
 
 use proc_macro2::TokenStream;
@@ -10,7 +10,7 @@ use quote::quote;
 
 use crate::{
     expand::{doc, error_type, validate_trait},
-    intermediate_representation::{Rule, TypeIntermediateRepresentation},
+    intermediate_representation::{FieldRule, TypeIntermediateRepresentation},
 };
 
 /// Generate the validation error enum of `intermediate_representation`, with its [`Display`](core::fmt::Display) and its [`Error`](core::error::Error).
@@ -31,11 +31,11 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     let has_range = intermediate_representation
         .fields
         .iter()
-        .any(|field| matches!(field.rule, Rule::Range { .. }));
+        .any(|field| matches!(field.rule, FieldRule::Range { .. }));
     let has_finite = intermediate_representation
         .fields
         .iter()
-        .any(|field| matches!(field.rule, Rule::Finite));
+        .any(|field| matches!(field.rule, FieldRule::Finite));
 
     let out_of_range = has_range.then(|| {
         let variant_doc = doc("The field value is outside its valid range.");
@@ -63,6 +63,22 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
         }
     });
 
+    let variant_wrappers = intermediate_representation
+        .variants
+        .iter()
+        .filter_map(|variant| {
+            let (payload_type, wrapper_variant) = variant.nested_payload()?;
+            let validate = validate_trait();
+            let variant_doc = doc(&format!(
+                "The validation of the `{}` variant failed.",
+                variant.ident
+            ));
+
+            Some(quote! {
+                #variant_doc
+                #wrapper_variant(<#payload_type as #validate>::Error),
+            })
+        });
     let final_wrappers =
         intermediate_representation
             .final_validations
@@ -84,7 +100,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
         .fields
         .iter()
         .filter_map(|field| {
-            let Rule::Nested { wrapper_variant } = &field.rule else {
+            let FieldRule::Nested { wrapper_variant } = &field.rule else {
                 return None;
             };
             let ty = &field.ty;
@@ -114,6 +130,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
         #vis enum #error_ident #generic_declaration {
             #out_of_range
             #not_finite
+            #(#variant_wrappers)*
             #(#final_wrappers)*
             #(#nested_wrappers)*
         }
@@ -229,11 +246,19 @@ fn source_body(
     }
 }
 
-/// Return the wrapper variants of `intermediate_representation`, the final validations first and the nested fields after.
+/// Return the wrapper variants of `intermediate_representation`, the nested variants first, then the final validations and the nested fields after.
 /// The order matches the order of the variants of the generated enum.
 fn wrapper_variants(
     intermediate_representation: &TypeIntermediateRepresentation,
 ) -> impl Iterator<Item = &proc_macro2::Ident> {
+    let payload_variants = intermediate_representation
+        .variants
+        .iter()
+        .filter_map(|variant| {
+            variant
+                .nested_payload()
+                .map(|(_, wrapper_variant)| wrapper_variant)
+        });
     let final_variants = intermediate_representation
         .final_validations
         .iter()
@@ -243,9 +268,11 @@ fn wrapper_variants(
             .fields
             .iter()
             .filter_map(|field| match &field.rule {
-                Rule::Nested { wrapper_variant } => Some(wrapper_variant),
-                Rule::Range { .. } | Rule::Finite | Rule::Skip => None,
+                FieldRule::Nested { wrapper_variant } => Some(wrapper_variant),
+                FieldRule::Range { .. } | FieldRule::Finite | FieldRule::Skip => None,
             });
 
-    final_variants.chain(nested_variants)
+    payload_variants
+        .chain(final_variants)
+        .chain(nested_variants)
 }

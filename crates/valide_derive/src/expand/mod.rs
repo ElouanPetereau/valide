@@ -8,7 +8,7 @@ use quote::{quote, quote_spanned};
 use syn::{Member, Type, spanned::Spanned as _};
 
 use crate::intermediate_representation::{
-    FieldIntermediateRepresentation, Rule, TypeIntermediateRepresentation,
+    FieldIntermediateRepresentation, FieldRule, TypeIntermediateRepresentation,
 };
 
 pub(crate) mod construction;
@@ -141,7 +141,7 @@ pub(crate) fn is_returned_by_value(ty: &Type) -> bool {
 
 /// Return the field enum variant of the given `field`.
 /// Only a range or a finite field carries one, and only those two ask for it.
-pub(crate) fn variant_of(field: &FieldIntermediateRepresentation) -> &Ident {
+pub(crate) fn field_enum_variant(field: &FieldIntermediateRepresentation) -> &Ident {
     field
         .variant
         .as_ref()
@@ -151,7 +151,7 @@ pub(crate) fn variant_of(field: &FieldIntermediateRepresentation) -> &Ident {
 /// Return the identifier of the getter of the given `field`.
 /// A named field keeps its own identifier, so a raw identifier stays valid.
 /// The unnamed arm builds the constant logical name of a newtype field.
-pub(crate) fn getter_ident(field: &FieldIntermediateRepresentation) -> Ident {
+pub(crate) fn field_getter_ident(field: &FieldIntermediateRepresentation) -> Ident {
     match &field.member {
         Member::Named(ident) => ident.clone(),
         Member::Unnamed(index) => Ident::new(&field.logical_name, index.span),
@@ -159,24 +159,24 @@ pub(crate) fn getter_ident(field: &FieldIntermediateRepresentation) -> Ident {
 }
 
 /// Return the identifier of the field validator of the given `field`.
-pub(crate) fn validator_ident(field: &FieldIntermediateRepresentation) -> Ident {
-    prefixed_ident(VALIDATOR_PREFIX, field)
+pub(crate) fn field_validator_ident(field: &FieldIntermediateRepresentation) -> Ident {
+    prefixed_field_ident(VALIDATOR_PREFIX, field)
 }
 
 /// Return the identifier of the setter of the given `field`.
-pub(crate) fn setter_ident(field: &FieldIntermediateRepresentation) -> Ident {
-    prefixed_ident(SETTER_PREFIX, field)
+pub(crate) fn field_setter_ident(field: &FieldIntermediateRepresentation) -> Ident {
+    prefixed_field_ident(SETTER_PREFIX, field)
 }
 
 /// Return the identifier of the new value that the setter of the given `field` takes.
-pub(crate) fn new_value_ident(field: &FieldIntermediateRepresentation) -> Ident {
-    prefixed_ident(NEW_VALUE_PREFIX, field)
+pub(crate) fn new_field_value_ident(field: &FieldIntermediateRepresentation) -> Ident {
+    prefixed_field_ident(NEW_VALUE_PREFIX, field)
 }
 
 /// Build the identifier `prefix` plus the logical name of `field`, with the span of the field.
 /// The parsing stage rejects a logical name that builds no identifier
 /// and it also removes the prefix of a raw identifier, so the built name is always valid.
-fn prefixed_ident(prefix: &str, field: &FieldIntermediateRepresentation) -> Ident {
+fn prefixed_field_ident(prefix: &str, field: &FieldIntermediateRepresentation) -> Ident {
     Ident::new(
         &format!("{prefix}{}", field.logical_name),
         member_span(&field.member),
@@ -219,34 +219,50 @@ pub(crate) fn final_validation_calls(
     quote! { #(#calls)* }
 }
 
-/// Generate the bound assertions of every nested field of `intermediate_representation` against `trait_path`.
-/// The span of the field type carries the diagnostic, so the compiler points at the field.
-/// The generic parameters of the validated type reach the assertion function, which binds the ones the field type names.
+/// Generate the bound assertions of every nested type of `intermediate_representation` against `trait_path`.
+/// The span of the nested type carries the diagnostic, so the compiler points at the field or at the variant payload.
+/// The generic parameters of the validated type reach the assertion function, which binds the ones the nested type names.
 fn nested_assertions(
     intermediate_representation: &TypeIntermediateRepresentation,
     trait_path: &TokenStream,
 ) -> TokenStream {
     let (impl_generics, _, where_clause) = intermediate_representation.generics.split_for_impl();
     let assertion_allow = assertion_allow();
-    let assertions = intermediate_representation
-        .fields
-        .iter()
-        .filter(|field| matches!(field.rule, Rule::Nested { .. }))
-        .map(|field| {
-            let ty = &field.ty;
-
-            quote_spanned! { ty.span()=>
-                const _: () = {
-                    #assertion_allow
-                    fn assertion #impl_generics () #where_clause {
-                        fn assert_nested_field<NestedType: #trait_path>() {}
-                        assert_nested_field::<#ty>();
-                    }
-                };
-            }
-        });
+    let assertions = nested_types(intermediate_representation).map(|ty| {
+        quote_spanned! { ty.span()=>
+            const _: () = {
+                #assertion_allow
+                fn assertion #impl_generics () #where_clause {
+                    fn assert_nested_field<NestedType: #trait_path>() {}
+                    assert_nested_field::<#ty>();
+                }
+            };
+        }
+    });
 
     quote! { #(#assertions)* }
+}
+
+/// Return the declared type of every nested field and of every nested variant payload of `intermediate_representation`.
+/// Such a type carries a validation of its own, which the generated code delegates to.
+fn nested_types(
+    intermediate_representation: &TypeIntermediateRepresentation,
+) -> impl Iterator<Item = &Type> {
+    let field_types = intermediate_representation
+        .fields
+        .iter()
+        .filter(|field| matches!(field.rule, FieldRule::Nested { .. }))
+        .map(|field| &field.ty);
+    let payload_types = intermediate_representation
+        .variants
+        .iter()
+        .filter_map(|variant| {
+            variant
+                .nested_payload()
+                .map(|(payload_type, _)| payload_type)
+        });
+
+    field_types.chain(payload_types)
 }
 
 /// Generate the assertion that every final validation error of `intermediate_representation` implements [`Error`](core::error::Error).

@@ -1,6 +1,7 @@
 //! Generation of the construction surface of a validated type.
 //!
 //! The generator emits the [`TryFrom`](core::convert::TryFrom) of its draft, the `new` constructor, the field getters and the [`Validate`](crate::Validate) implementation.
+//! An enum gets no getter, because a caller matches on the public variants of the enum.
 //! A value can only exist once a draft passed the whole validation.
 //! The unchecked constructor that builds the type from a draft while skipping the validation
 //! moves the fields of the draft and recurses into every nested field.
@@ -9,9 +10,10 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{doc, error_type, getter_ident, is_returned_by_value, validate_trait},
+    expand::{doc, error_type, field_getter_ident, is_returned_by_value, validate_trait},
     intermediate_representation::{
-        FieldIntermediateRepresentation, Rule, Shape, TypeIntermediateRepresentation,
+        FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
+        VariantKind, VariantRule,
     },
 };
 
@@ -33,7 +35,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     let getters = intermediate_representation
         .fields
         .iter()
-        .map(|field| getter(intermediate_representation, field));
+        .map(|field| field_getter(intermediate_representation, field));
     let unchecked_body = unchecked_body(intermediate_representation);
 
     quote! {
@@ -74,14 +76,14 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
 
 /// Generate the getter of the given `field` of `intermediate_representation`.
 /// A primitive field returns its value, every other field returns a reference to it.
-fn getter(
+fn field_getter(
     intermediate_representation: &TypeIntermediateRepresentation,
     field: &FieldIntermediateRepresentation,
 ) -> TokenStream {
     let vis = &intermediate_representation.vis;
     let ty = &field.ty;
     let member = &field.member;
-    let getter = getter_ident(field);
+    let getter = field_getter_ident(field);
     let getter_doc = doc(&format!("Retrieve the `{}` field.", field.logical_name));
 
     if is_returned_by_value(ty) {
@@ -119,6 +121,34 @@ fn unchecked_body(intermediate_representation: &TypeIntermediateRepresentation) 
 
             quote! { Self(#(#values),*) }
         }
+        Shape::Enum => {
+            let draft_ident = &intermediate_representation.draft_ident;
+            let validate = validate_trait();
+            // The scrutinee carries the generic arguments of the draft, so the patterns name the draft alone
+            let arms = intermediate_representation.variants.iter().map(|variant| {
+                let variant_ident = &variant.ident;
+                let VariantKind::Payload { ty, rule, .. } = &variant.kind else {
+                    return quote! { #draft_ident::#variant_ident => Self::#variant_ident, };
+                };
+
+                match rule {
+                    VariantRule::Nested { .. } => quote! {
+                        #draft_ident::#variant_ident(payload) => Self::#variant_ident(
+                            <#ty as #validate>::from_draft_unchecked(payload),
+                        ),
+                    },
+                    VariantRule::Skip => quote! {
+                        #draft_ident::#variant_ident(payload) => Self::#variant_ident(payload),
+                    },
+                }
+            });
+
+            quote! {
+                match draft {
+                    #(#arms)*
+                }
+            }
+        }
     }
 }
 
@@ -126,7 +156,7 @@ fn unchecked_body(intermediate_representation: &TypeIntermediateRepresentation) 
 /// A nested field builds its own type from its own draft.
 fn field_value(field: &FieldIntermediateRepresentation) -> TokenStream {
     let member = &field.member;
-    if matches!(field.rule, Rule::Nested { .. }) {
+    if matches!(field.rule, FieldRule::Nested { .. }) {
         let ty = &field.ty;
         let validate = validate_trait();
 

@@ -4,17 +4,19 @@
 //! A setter validates a draft that carries the new value, then commits the value only on success,
 //! so a rejected patch leaves the value untouched.
 //! The setter of a skip field only stays infallible while the type declares no final validation.
+//! An enum gets no setter, because a patch of an enum replaces the whole variant, which the `new` constructor already validates.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
     expand::{
-        doc, error_type, final_validation_calls, new_value_ident, patch_trait, setter_ident,
-        validator_ident,
+        doc, error_type, field_setter_ident, field_validator_ident, final_validation_calls,
+        new_field_value_ident, patch_trait,
     },
     intermediate_representation::{
-        FieldIntermediateRepresentation, Rule, Shape, TypeIntermediateRepresentation,
+        FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
+        VariantKind, VariantRule,
     },
 };
 
@@ -27,10 +29,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     let patch = patch_trait();
 
     let conversion_body = conversion_body(intermediate_representation);
-    let setters = intermediate_representation
-        .fields
-        .iter()
-        .map(|field| setter(intermediate_representation, field));
+    let setters = field_setters(intermediate_representation);
 
     quote! {
         impl #impl_generics ::core::convert::From<#type_ident #ty_generics> for #draft_ident #ty_generics
@@ -49,6 +48,26 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
             }
         }
 
+        #setters
+    }
+}
+
+/// Generate the implementation block that carries the setters of `intermediate_representation`.
+/// An enum gets no block at all, because it gets no setter.
+fn field_setters(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
+    if matches!(intermediate_representation.shape, Shape::Enum) {
+        return TokenStream::new();
+    }
+
+    let type_ident = &intermediate_representation.ident;
+    let (impl_generics, ty_generics, where_clause) =
+        intermediate_representation.generics.split_for_impl();
+    let setters = intermediate_representation
+        .fields
+        .iter()
+        .map(|field| field_setter(intermediate_representation, field));
+
+    quote! {
         impl #impl_generics #type_ident #ty_generics #where_clause {
             #(#setters)*
         }
@@ -61,7 +80,7 @@ fn conversion_body(intermediate_representation: &TypeIntermediateRepresentation)
         Shape::Named => {
             let assignments = intermediate_representation.fields.iter().map(|field| {
                 let member = &field.member;
-                let value = draft_value(field);
+                let value = draft_field_value(field);
 
                 quote! { #member: #value, }
             });
@@ -69,18 +88,49 @@ fn conversion_body(intermediate_representation: &TypeIntermediateRepresentation)
             quote! { Self { #(#assignments)* } }
         }
         Shape::Newtype => {
-            let values = intermediate_representation.fields.iter().map(draft_value);
+            let values = intermediate_representation
+                .fields
+                .iter()
+                .map(draft_field_value);
 
             quote! { Self(#(#values),*) }
+        }
+        Shape::Enum => {
+            let type_ident = &intermediate_representation.ident;
+            let patch = patch_trait();
+            // The scrutinee carries the generic arguments of the validated type, so the patterns name the type alone
+            let arms = intermediate_representation.variants.iter().map(|variant| {
+                let variant_ident = &variant.ident;
+                let VariantKind::Payload { rule, .. } = &variant.kind else {
+                    return quote! { #type_ident::#variant_ident => Self::#variant_ident, };
+                };
+
+                match rule {
+                    VariantRule::Nested { .. } => quote! {
+                        #type_ident::#variant_ident(payload) => Self::#variant_ident(
+                            #patch::to_draft(&payload),
+                        ),
+                    },
+                    VariantRule::Skip => quote! {
+                        #type_ident::#variant_ident(payload) => Self::#variant_ident(payload),
+                    },
+                }
+            });
+
+            quote! {
+                match value {
+                    #(#arms)*
+                }
+            }
         }
     }
 }
 
 /// Generate the draft value of the given `field`, read from a value named `value`.
 /// A nested field converts itself back to its own draft.
-fn draft_value(field: &FieldIntermediateRepresentation) -> TokenStream {
+fn draft_field_value(field: &FieldIntermediateRepresentation) -> TokenStream {
     let member = &field.member;
-    if matches!(field.rule, Rule::Nested { .. }) {
+    if matches!(field.rule, FieldRule::Nested { .. }) {
         let patch = patch_trait();
 
         return quote! { #patch::to_draft(&value.#member) };
@@ -90,7 +140,7 @@ fn draft_value(field: &FieldIntermediateRepresentation) -> TokenStream {
 }
 
 /// Generate the setter of the given `field` of `intermediate_representation`.
-fn setter(
+fn field_setter(
     intermediate_representation: &TypeIntermediateRepresentation,
     field: &FieldIntermediateRepresentation,
 ) -> TokenStream {
@@ -101,10 +151,10 @@ fn setter(
     let error_enum_type = error_type(intermediate_representation);
     let ty = &field.ty;
     let member = &field.member;
-    let setter = setter_ident(field);
-    let new_value = new_value_ident(field);
+    let setter = field_setter_ident(field);
+    let new_value = new_field_value_ident(field);
     let setter_doc = doc(&format!("Set the given `{new_value}`."));
-    let is_skipped = matches!(field.rule, Rule::Skip);
+    let is_skipped = matches!(field.rule, FieldRule::Skip);
 
     // A skip field carries no field validator,
     // so nothing can reject the new value while the type declares no final validation.
@@ -123,7 +173,7 @@ fn setter(
     // so the setter of such a field builds the draft and runs the final validations.
     // It runs no field validator, because a skip field has none
     let validator_call = (!is_skipped).then(|| {
-        let validator = validator_ident(field);
+        let validator = field_validator_ident(field);
 
         quote! { let _: () = tmp_draft.#validator()?; }
     });
@@ -131,7 +181,7 @@ fn setter(
     // A nested field lends its value to the draft, which holds the draft of the nested type,
     // so the commit still owns the new value.
     // Every other field moves its new value into the draft and the commit moves it back out once the validation passed
-    let (draft_assignment, commit) = if matches!(field.rule, Rule::Nested { .. }) {
+    let (draft_assignment, commit) = if matches!(field.rule, FieldRule::Nested { .. }) {
         let patch = patch_trait();
 
         (
