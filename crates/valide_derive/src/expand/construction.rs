@@ -10,7 +10,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{doc, error_type, field_getter_ident, is_returned_by_value, validate_trait},
+    expand::{doc, error_type, validate_trait},
     intermediate_representation::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
         VariantKind, VariantRule,
@@ -83,10 +83,10 @@ fn field_getter(
     let vis = &intermediate_representation.vis;
     let ty = &field.ty;
     let member = &field.member;
-    let getter = field_getter_ident(field);
+    let getter = field.getter_ident();
     let getter_doc = doc(&format!("Retrieve the `{}` field.", field.logical_name));
 
-    if is_returned_by_value(ty) {
+    if field.is_returned_by_value() {
         return quote! {
             #getter_doc
             #vis fn #getter(&self) -> #ty {

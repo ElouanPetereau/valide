@@ -8,7 +8,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{article, doc, field_enum_variant},
+    expand::{article, doc},
     intermediate_representation::{
         FieldIntermediateRepresentation, TypeIntermediateRepresentation,
     },
@@ -35,7 +35,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
     ));
 
     let variants = named_fields.iter().map(|field| {
-        let variant = field_enum_variant(field);
+        let variant = field.enum_variant();
         let variant_doc = doc(&format!("The `{}` field.", field.logical_name));
 
         quote! {
@@ -44,7 +44,7 @@ pub(crate) fn expand(intermediate_representation: &TypeIntermediateRepresentatio
         }
     });
     let arms = named_fields.iter().map(|field| {
-        let variant = field_enum_variant(field);
+        let variant = field.enum_variant();
         let logical_name = &field.logical_name;
 
         quote! { Self::#variant => #logical_name, }

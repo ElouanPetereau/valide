@@ -4,8 +4,22 @@
 //! Each field payload (for a struct) and each variant payload (for an enum) carries its validation rule.
 //! The expanders never look at a syntax tree again.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use syn::{Attribute, Generics, Ident, Member, Path, Type, Visibility};
+
+/// Names of the primitive types that a getter returns by value.
+/// A derive cannot detect `Copy`, so the generator compares the token of the field type with this list
+/// and returns a reference to every other type.
+const BY_VALUE_TYPES: &[&str] = &[
+    "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32",
+    "u64", "u128", "usize",
+];
+/// Prefix of the identifier of a field validator.
+const VALIDATOR_PREFIX: &str = "validate_";
+/// Prefix of the identifier of a setter.
+const SETTER_PREFIX: &str = "set_";
+/// Prefix of the identifier of the new value that a setter takes.
+const NEW_VALUE_PREFIX: &str = "new_";
 
 /// Shape of a validated type, which drives the field access of the generated code.
 #[derive(Clone, Copy, Debug)]
@@ -56,6 +70,71 @@ pub(crate) struct FieldIntermediateRepresentation {
     pub(crate) passthrough: Vec<TokenStream>,
     /// Validation rule of the field.
     pub(crate) rule: FieldRule,
+}
+
+impl FieldIntermediateRepresentation {
+    /// Return the field enum variant of the field.
+    /// Only a range or a finite field carries one, and only those two ask for it.
+    pub(crate) fn enum_variant(&self) -> &Ident {
+        self.variant
+            .as_ref()
+            .expect("a range or a finite field always carries a variant")
+    }
+
+    /// Return the identifier of the getter of the field.
+    /// A named field keeps its own identifier, so a raw identifier stays valid.
+    /// The unnamed arm builds the constant logical name of a newtype field.
+    pub(crate) fn getter_ident(&self) -> Ident {
+        match &self.member {
+            Member::Named(ident) => ident.clone(),
+            Member::Unnamed(index) => Ident::new(&self.logical_name, index.span),
+        }
+    }
+
+    /// Return the identifier of the field validator of the field.
+    pub(crate) fn validator_ident(&self) -> Ident {
+        self.prefixed_ident(VALIDATOR_PREFIX)
+    }
+
+    /// Return the identifier of the setter of the field.
+    pub(crate) fn setter_ident(&self) -> Ident {
+        self.prefixed_ident(SETTER_PREFIX)
+    }
+
+    /// Return the identifier of the new value that the setter of the field takes.
+    pub(crate) fn new_value_ident(&self) -> Ident {
+        self.prefixed_ident(NEW_VALUE_PREFIX)
+    }
+
+    /// Whether a getter of the field returns the value instead of a reference to it.
+    pub(crate) fn is_returned_by_value(&self) -> bool {
+        let Type::Path(path_type) = &self.ty else {
+            return false;
+        };
+        if path_type.qself.is_some() {
+            return false;
+        }
+        let Some(ident) = path_type.path.get_ident() else {
+            return false;
+        };
+
+        BY_VALUE_TYPES.iter().any(|name| ident == name)
+    }
+
+    /// Build the identifier `prefix` plus the logical name of the field, with the span of the field.
+    /// The parsing stage rejects a logical name that builds no identifier
+    /// and it also removes the prefix of a raw identifier, so the built name is always valid.
+    fn prefixed_ident(&self, prefix: &str) -> Ident {
+        Ident::new(&format!("{prefix}{}", self.logical_name), self.span())
+    }
+
+    /// Return the span of the field, which every derived identifier of the field carries.
+    fn span(&self) -> Span {
+        match &self.member {
+            Member::Named(ident) => ident.span(),
+            Member::Unnamed(index) => index.span,
+        }
+    }
 }
 
 /// Validation rule of the payload of a variant.

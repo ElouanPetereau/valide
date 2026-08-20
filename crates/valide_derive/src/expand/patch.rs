@@ -10,10 +10,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::{
-    expand::{
-        doc, error_type, field_setter_ident, field_validator_ident, final_validation_calls,
-        new_field_value_ident, patch_trait,
-    },
+    expand::{doc, error_type, final_validation_calls, patch_trait},
     intermediate_representation::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
         VariantKind, VariantRule,
@@ -151,8 +148,8 @@ fn field_setter(
     let error_enum_type = error_type(intermediate_representation);
     let ty = &field.ty;
     let member = &field.member;
-    let setter = field_setter_ident(field);
-    let new_value = new_field_value_ident(field);
+    let setter = field.setter_ident();
+    let new_value = field.new_value_ident();
     let setter_doc = doc(&format!("Set the given `{new_value}`."));
     let is_skipped = matches!(field.rule, FieldRule::Skip);
 
@@ -173,7 +170,7 @@ fn field_setter(
     // so the setter of such a field builds the draft and runs the final validations.
     // It runs no field validator, because a skip field has none
     let validator_call = (!is_skipped).then(|| {
-        let validator = field_validator_ident(field);
+        let validator = field.validator_ident();
 
         quote! { let _: () = tmp_draft.#validator()?; }
     });

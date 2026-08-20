@@ -11,8 +11,7 @@ use quote::quote;
 
 use crate::{
     expand::{
-        doc, error_constructor_turbofish, error_type, field_enum_variant, field_validator_ident,
-        final_validation_calls, validate_trait,
+        doc, error_constructor_turbofish, error_type, final_validation_calls, validate_trait,
     },
     intermediate_representation::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
@@ -69,7 +68,7 @@ fn field_calls(intermediate_representation: &TypeIntermediateRepresentation) -> 
         .iter()
         .filter(|field| !matches!(field.rule, FieldRule::Skip))
         .map(|field| {
-            let validator = field_validator_ident(field);
+            let validator = field.validator_ident();
 
             quote! { self.#validator()?; }
         });
@@ -137,14 +136,14 @@ fn field_validator(
     let error_enum_type = error_type(intermediate_representation);
     let field_enum_ident = &intermediate_representation.field_enum_ident;
     let member = &field.member;
-    let validator = field_validator_ident(field);
+    let validator = field.validator_ident();
     let validator_doc = doc(&format!("Validate the `{}` field.", field.logical_name));
 
     let body = match &field.rule {
         // The early return above already handled this rule
         FieldRule::Skip => return None,
         FieldRule::Range { check_tokens, text } => {
-            let variant = field_enum_variant(field);
+            let variant = field.enum_variant();
 
             quote! {
                 if !::core::ops::RangeBounds::contains(&(#check_tokens), &self.#member) {
@@ -156,7 +155,7 @@ fn field_validator(
             }
         }
         FieldRule::Finite => {
-            let variant = field_enum_variant(field);
+            let variant = field.enum_variant();
 
             quote! {
                 if !self.#member.is_finite() {

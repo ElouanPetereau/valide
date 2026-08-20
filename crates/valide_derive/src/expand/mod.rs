@@ -3,13 +3,11 @@
 //! The module holds the helpers that the expanders share.
 //! Every emitted path is absolute, so the generated code never depends on the imports of the module that holds the validated type.
 
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
-use syn::{Member, Type, spanned::Spanned as _};
+use syn::{Type, spanned::Spanned as _};
 
-use crate::intermediate_representation::{
-    FieldIntermediateRepresentation, FieldRule, TypeIntermediateRepresentation,
-};
+use crate::intermediate_representation::{FieldRule, TypeIntermediateRepresentation};
 
 pub(crate) mod construction;
 pub(crate) mod draft;
@@ -17,20 +15,6 @@ pub(crate) mod error_enum;
 pub(crate) mod field_enum;
 pub(crate) mod patch;
 pub(crate) mod validators;
-
-/// Names of the primitive types that a getter returns by value.
-/// A derive cannot detect `Copy`, so the generator compares the token of the field type with this list
-/// and returns a reference to every other type.
-const BY_VALUE_TYPES: &[&str] = &[
-    "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32",
-    "u64", "u128", "usize",
-];
-/// Prefix of the identifier of a field validator.
-const VALIDATOR_PREFIX: &str = "validate_";
-/// Prefix of the identifier of a setter.
-const SETTER_PREFIX: &str = "set_";
-/// Prefix of the identifier of the new value that a setter takes.
-const NEW_VALUE_PREFIX: &str = "new_";
 
 /// Generate every item of the `Validate` derive of `intermediate_representation`.
 /// The bound assertions come first, so their targeted diagnostic reaches the reader before the diagnostics of the generated items.
@@ -121,73 +105,6 @@ pub(crate) fn article(name: &str) -> &'static str {
     match name.chars().next() {
         Some('A' | 'E' | 'I' | 'O' | 'U' | 'a' | 'e' | 'i' | 'o' | 'u') => "an",
         _ => "a",
-    }
-}
-
-/// Whether a getter of the given `ty` returns the value instead of a reference to it.
-pub(crate) fn is_returned_by_value(ty: &Type) -> bool {
-    let Type::Path(path_type) = ty else {
-        return false;
-    };
-    if path_type.qself.is_some() {
-        return false;
-    }
-    let Some(ident) = path_type.path.get_ident() else {
-        return false;
-    };
-
-    BY_VALUE_TYPES.iter().any(|name| ident == name)
-}
-
-/// Return the field enum variant of the given `field`.
-/// Only a range or a finite field carries one, and only those two ask for it.
-pub(crate) fn field_enum_variant(field: &FieldIntermediateRepresentation) -> &Ident {
-    field
-        .variant
-        .as_ref()
-        .expect("a range or a finite field always carries a variant")
-}
-
-/// Return the identifier of the getter of the given `field`.
-/// A named field keeps its own identifier, so a raw identifier stays valid.
-/// The unnamed arm builds the constant logical name of a newtype field.
-pub(crate) fn field_getter_ident(field: &FieldIntermediateRepresentation) -> Ident {
-    match &field.member {
-        Member::Named(ident) => ident.clone(),
-        Member::Unnamed(index) => Ident::new(&field.logical_name, index.span),
-    }
-}
-
-/// Return the identifier of the field validator of the given `field`.
-pub(crate) fn field_validator_ident(field: &FieldIntermediateRepresentation) -> Ident {
-    prefixed_field_ident(VALIDATOR_PREFIX, field)
-}
-
-/// Return the identifier of the setter of the given `field`.
-pub(crate) fn field_setter_ident(field: &FieldIntermediateRepresentation) -> Ident {
-    prefixed_field_ident(SETTER_PREFIX, field)
-}
-
-/// Return the identifier of the new value that the setter of the given `field` takes.
-pub(crate) fn new_field_value_ident(field: &FieldIntermediateRepresentation) -> Ident {
-    prefixed_field_ident(NEW_VALUE_PREFIX, field)
-}
-
-/// Build the identifier `prefix` plus the logical name of `field`, with the span of the field.
-/// The parsing stage rejects a logical name that builds no identifier
-/// and it also removes the prefix of a raw identifier, so the built name is always valid.
-fn prefixed_field_ident(prefix: &str, field: &FieldIntermediateRepresentation) -> Ident {
-    Ident::new(
-        &format!("{prefix}{}", field.logical_name),
-        member_span(&field.member),
-    )
-}
-
-/// Return the span of the given `member`.
-fn member_span(member: &Member) -> Span {
-    match member {
-        Member::Named(ident) => ident.span(),
-        Member::Unnamed(index) => index.span,
     }
 }
 
