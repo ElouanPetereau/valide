@@ -76,7 +76,7 @@ fn main() {
   A final validation holds a rule that spans several fields, so it always reads a draft whose fields are individually valid.
 - The error enum.
   The shared `OutOfRange` and `NotFinite` variants carry a generated field enum that names the failing field.
-  One wrapper variant exists per final validation and per fallible nested field.
+  One wrapper variant exists per final validation, per fallible nested field and per custom field.
 - The `TryFrom` of the draft and the `new` constructor, the two validated entry points.
   When using the [`serde`](https://docs.rs/serde/latest/serde/) crate, write `#[serde(try_from = "TypeDraft")]` on the type so the whole validation also guards deserialization.
 - The getters.
@@ -108,6 +108,9 @@ Every field must also be private. A public field is a compilation error, because
   `is_finite` method of the field type, which a trait bound can provide for a generic field.
 - `#[validate(nested)]` delegates the validation to the type of the field, which must implement
   `Validate`. The draft of the type holds the draft of the field.
+- `#[validate(custom(check_label, error = LabelError))]` delegates the validation of the field to  `check_label`.
+  It must be an inherent associated function of the validated type, because the generated call names it `Type::check_label(&draft.field)`.
+  The function takes a reference to the field and returns `Result<(), LabelError>`.
 - `#[validate(skip)]` excludes the field from every field validation, so the field gets no
   validator. The setter of the field stays infallible while the type declares no final
   validation. As soon as the type declares one final validation, the setter becomes fallible.

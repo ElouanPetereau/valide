@@ -144,31 +144,34 @@ impl<'ir> ExpansionContext<'ir> {
         quote! { #(#assertions)* }
     }
 
-    /// Generate the assertion that every final validation error of the validated type implements [`Error`](core::error::Error).
-    /// The generated error enum reports such an error as its source, which needs the trait.
-    /// The span of the error type carries the diagnostic, so the compiler points at the attribute.
+    /// Generate the assertion that every wrapped error type of the validated type implements [`Error`](core::error::Error).
+    /// A final validation and a custom field both hand their error type to the generated error enum,
+    /// which reports such an error as its source, and that needs the trait.
+    /// The span of the error type carries the diagnostic, so the compiler points at the attribute or at the marker.
     /// The generic parameters of the validated type reach the assertion function, which binds the ones the error type names.
-    fn final_validation_error_assertions(&self) -> TokenStream {
+    fn wrapped_error_assertions(&self) -> TokenStream {
         let impl_generics = &self.impl_generics;
         let where_clause = self.where_clause;
         let assertion_allow = assertion_allow();
-        let assertions = self
+        let final_validation_error_types = self
             .intermediate_representation
             .final_validations
             .iter()
-            .map(|final_validation| {
-                let error_ty = &final_validation.error_ty;
+            .map(|final_validation| &final_validation.error_ty);
+        let assertions = final_validation_error_types
+            .chain(self.intermediate_representation.custom_error_types())
+            .map(|error_ty| {
                 // Only the call carries the span of the error type. The bound keeps the span of the macro,
                 // so the absolute path of the trait stays out of the source of the caller
                 let assertion_call = quote_spanned! { error_ty.span()=>
-                    assert_final_validation_error::<#error_ty>();
+                    assert_wrapped_error::<#error_ty>();
                 };
 
                 quote! {
                     const _: () = {
                         #assertion_allow
                         fn assertion #impl_generics () #where_clause {
-                            fn assert_final_validation_error<ErrorType: ::core::error::Error>() {}
+                            fn assert_wrapped_error<ErrorType: ::core::error::Error>() {}
                             #assertion_call
                         }
                     };
@@ -206,7 +209,7 @@ pub(crate) fn expand_validate(
 ) -> TokenStream {
     let context = ExpansionContext::new(intermediate_representation);
     let assertions = context.nested_assertions(&validate_trait());
-    let error_assertions = context.final_validation_error_assertions();
+    let error_assertions = context.wrapped_error_assertions();
     let field_enum = field_enum::expand(&context);
     let error_enum = error_enum::expand(&context);
     let draft = draft::expand(&context);

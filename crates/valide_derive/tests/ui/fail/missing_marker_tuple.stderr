@@ -1,4 +1,4 @@
-error: a field needs exactly one #[validate(...)] marker among range(...), finite, nested and skip
+error: a field needs exactly one #[validate(...)] marker among range(...), finite, nested, custom(...) and skip
  --> tests/ui/fail/missing_marker_tuple.rs:4:17
   |
 4 | struct Fraction(f64);

@@ -1,7 +1,7 @@
 //! Generation of the validation error enum of a validated type.
 //!
 //! The generator emits the shared field shaped variants that carry the failing field.
-//! It emits one wrapper variant per nested variant of an enum, per final validation and per nested field.
+//! It emits one wrapper variant per nested variant of an enum, per final validation and per nested or custom field.
 //! A variant only exists when at least one field, one variant or one attribute can produce it.
 //! A wrapper variant reports the error it holds as its source.
 
@@ -90,24 +90,40 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
                     #wrapper_variant(#error_ty),
                 }
             });
-    let nested_wrappers = intermediate_representation
+    // A nested field and a custom field share a single pass, so the two wrapper kinds keep the declaration order of the fields
+    let field_wrappers = intermediate_representation
         .fields
         .iter()
-        .filter_map(|field| {
-            let FieldRule::Nested { wrapper_variant } = &field.rule else {
-                return None;
-            };
-            let ty = &field.ty;
-            let validate = validate_trait();
-            let variant_doc = doc(&format!(
-                "The validation of the `{}` field failed.",
-                field.logical_name
-            ));
+        .filter_map(|field| match &field.rule {
+            FieldRule::Nested { wrapper_variant } => {
+                let ty = &field.ty;
+                let validate = validate_trait();
+                let variant_doc = doc(&format!(
+                    "The validation of the `{}` field failed.",
+                    field.logical_name
+                ));
 
-            Some(quote! {
-                #variant_doc
-                #wrapper_variant(<#ty as #validate>::Error),
-            })
+                Some(quote! {
+                    #variant_doc
+                    #wrapper_variant(<#ty as #validate>::Error),
+                })
+            }
+            FieldRule::Custom {
+                fn_ident,
+                error_ty,
+                wrapper_variant,
+            } => {
+                let variant_doc = doc(&format!(
+                    "The custom validation `{fn_ident}` of the `{}` field failed.",
+                    field.logical_name
+                ));
+
+                Some(quote! {
+                    #variant_doc
+                    #wrapper_variant(#error_ty),
+                })
+            }
+            FieldRule::Range { .. } | FieldRule::Finite | FieldRule::Skip => None,
         });
 
     let display_body = display_body(intermediate_representation, has_range, has_finite);
@@ -126,7 +142,7 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
             #not_finite
             #(#variant_wrappers)*
             #(#final_wrappers)*
-            #(#nested_wrappers)*
+            #(#field_wrappers)*
         }
 
         impl #implementation_header ::core::fmt::Display for #error_enum_type

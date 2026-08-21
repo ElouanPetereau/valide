@@ -179,6 +179,24 @@ fn field_validator(
                 )?;
             }
         }
+        // The function belongs to the validated type and reads the field of the draft by reference,
+        // which the call shape of a final validation already follows
+        FieldRule::Custom {
+            fn_ident,
+            wrapper_variant,
+            ..
+        } => {
+            let type_ident = &intermediate_representation.ident;
+            let turbofish = context.turbofish();
+            let error_constructor = context.error_constructor_turbofish();
+
+            quote! {
+                ::core::result::Result::map_err(
+                    #type_ident #turbofish::#fn_ident(&self.#member),
+                    #error_constructor::#wrapper_variant,
+                )?;
+            }
+        }
     };
 
     Some(quote! {

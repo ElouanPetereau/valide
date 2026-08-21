@@ -1,4 +1,4 @@
-error: a field needs exactly one #[validate(...)] marker among range(...), finite, nested and skip
+error: a field needs exactly one #[validate(...)] marker among range(...), finite, nested, custom(...) and skip
  --> tests/ui/fail/duplicate_marker.rs:6:5
   |
 6 |     #[validate(finite)]

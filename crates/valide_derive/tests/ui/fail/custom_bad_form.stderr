@@ -1,0 +1,5 @@
+error: #[validate(custom(...))] must be written #[validate(custom(fn, error = Type))]
+ --> tests/ui/fail/custom_bad_form.rs:5:23
+  |
+5 |     #[validate(custom(check_value))]
+  |                       ^^^^^^^^^^^

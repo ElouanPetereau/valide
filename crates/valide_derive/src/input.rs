@@ -44,6 +44,8 @@ const RANGE_MARKER: &str = "range";
 const FINITE_MARKER: &str = "finite";
 /// Marker that delegates the validation to the type of the field.
 const NESTED_MARKER: &str = "nested";
+/// Marker that delegates the validation to a function of the validated type.
+const CUSTOM_MARKER: &str = "custom";
 /// Marker that excludes the field from every validation.
 const SKIP_MARKER: &str = "skip";
 /// Name of the `Bound` variant of an included bound.
@@ -55,8 +57,7 @@ const UNBOUNDED_BOUND: &str = "Unbounded";
 /// Logical name of the single field of a newtype.
 const NEWTYPE_LOGICAL_NAME: &str = "value";
 /// Message that describes the markers of a field.
-const MARKER_MESSAGE: &str =
-    "a field needs exactly one #[validate(...)] marker among range(...), finite, nested and skip";
+const MARKER_MESSAGE: &str = "a field needs exactly one #[validate(...)] marker among range(...), finite, nested, custom(...) and skip";
 /// Message of the rejection of a field that carries a visibility keyword.
 const PRIVATE_FIELD_MESSAGE: &str = "a validated field must be private, because the generated getters and setters guard every access";
 /// Message that describes the markers of a variant payload.
@@ -82,6 +83,9 @@ const RANGE_MESSAGE: &str =
 /// Message that describes the accepted bounds of the bound pair form.
 const BOUND_MESSAGE: &str =
     "a bound must be Bound::Included(value), Bound::Excluded(value) or Bound::Unbounded";
+/// Message that describes the arguments of a `custom` marker.
+const CUSTOM_MESSAGE: &str =
+    "#[validate(custom(...))] must be written #[validate(custom(fn, error = Type))]";
 /// Message that describes the arguments of a `final_validation` attribute.
 const FINAL_VALIDATION_MESSAGE: &str =
     "#[final_validation(...)] must be written #[final_validation(fn, error = Type)]";
@@ -323,7 +327,7 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
     // so only those two rules get a field enum variant
     let variant = match &rule {
         FieldRule::Range { .. } | FieldRule::Finite => Some(field_variant),
-        FieldRule::Nested { .. } | FieldRule::Skip => None,
+        FieldRule::Nested { .. } | FieldRule::Custom { .. } | FieldRule::Skip => None,
     };
 
     Ok(FieldIntermediateRepresentation {
@@ -357,6 +361,9 @@ fn parse_field_marker(
         if list.path.is_ident(RANGE_MARKER) {
             return parse_field_range(list);
         }
+        if list.path.is_ident(CUSTOM_MARKER) {
+            return parse_field_custom(list, logical_name, name_span);
+        }
 
         return Err(Error::new_spanned(&list.path, MARKER_MESSAGE));
     }
@@ -371,11 +378,28 @@ fn parse_field_marker(
             wrapper_variant: naming::nested_wrapper_variant(logical_name, name_span)?,
         });
     }
+    // The marker needs its arguments,
+    // so the bare spelling reads as a malformed custom marker and not as an unknown marker
+    if path.is_ident(CUSTOM_MARKER) {
+        return Err(Error::new_spanned(path, CUSTOM_MESSAGE));
+    }
     if path.is_ident(SKIP_MARKER) {
         return Ok(FieldRule::Skip);
     }
 
     Err(Error::new_spanned(path, MARKER_MESSAGE))
+}
+
+/// Parse the arguments of the given `custom` marker `list` into the rule of a field.
+/// The field is called `logical_name`, with the name span `name_span`, which builds the wrapper variant.
+fn parse_field_custom(list: &MetaList, logical_name: &str, name_span: Span) -> Result<FieldRule> {
+    let (fn_ident, error_ty) = list.parse_args_with(custom_arguments)?;
+
+    Ok(FieldRule::Custom {
+        fn_ident,
+        error_ty,
+        wrapper_variant: naming::nested_wrapper_variant(logical_name, name_span)?,
+    })
 }
 
 /// Parse the arguments of the given `range` marker `list` into the rule of a field.
@@ -586,19 +610,31 @@ fn parse_final_validation(attribute: &Attribute) -> Result<FinalValidation> {
 /// Parse the arguments of a `final_validation` attribute from `input`.
 /// The arguments are the validation function and its error type.
 fn final_validation_arguments(input: ParseStream<'_>) -> Result<(Ident, Path)> {
+    function_and_error_arguments(input, FINAL_VALIDATION_MESSAGE)
+}
+
+/// Parse the arguments of a `custom` marker from `input`.
+/// The arguments are the validation function and its error type, written like the ones of a `final_validation` attribute.
+fn custom_arguments(input: ParseStream<'_>) -> Result<(Ident, Path)> {
+    function_and_error_arguments(input, CUSTOM_MESSAGE)
+}
+
+/// Parse a validation function and its error type from `input`, written `function, error = Type`.
+/// Every rejection carries `message`, which names the attribute or the marker that owns the arguments.
+fn function_and_error_arguments(input: ParseStream<'_>, message: &str) -> Result<(Ident, Path)> {
     let function: Ident = input.parse()?;
     if input.is_empty() {
-        return Err(Error::new(function.span(), FINAL_VALIDATION_MESSAGE));
+        return Err(Error::new(function.span(), message));
     }
     let _comma: Token![,] = input.parse()?;
     let key: Ident = input.parse()?;
     if key != ERROR_KEY {
-        return Err(Error::new_spanned(&key, FINAL_VALIDATION_MESSAGE));
+        return Err(Error::new_spanned(&key, message));
     }
     let _assign: Token![=] = input.parse()?;
     let error_type: Path = input.parse()?;
     if !input.is_empty() {
-        return Err(Error::new(input.span(), FINAL_VALIDATION_MESSAGE));
+        return Err(Error::new(input.span(), message));
     }
 
     Ok((function, error_type))
@@ -661,6 +697,7 @@ fn used_error_parameters<'generics>(
 /// Return the tokens of every type that reaches the generated error enum of a validated type.
 /// A nested field contributes its declared type, whose own error the enum wraps.
 /// A nested variant payload contributes its declared type the same way.
+/// A custom field contributes the error type that its function returns.
 /// A final validation contributes the error type that it returns.
 fn error_payload_types(
     fields: &[FieldIntermediateRepresentation],
@@ -671,6 +708,13 @@ fn error_payload_types(
         .iter()
         .filter(|field| matches!(field.rule, FieldRule::Nested { .. }))
         .map(|field| field.ty.to_token_stream());
+    let custom_error_types = fields.iter().filter_map(|field| match &field.rule {
+        FieldRule::Custom { error_ty, .. } => Some(error_ty.to_token_stream()),
+        FieldRule::Range { .. }
+        | FieldRule::Finite
+        | FieldRule::Nested { .. }
+        | FieldRule::Skip => None,
+    });
     let nested_payload_types = variants.iter().filter_map(|variant| {
         variant
             .nested_payload()
@@ -681,6 +725,7 @@ fn error_payload_types(
         .map(|final_validation| final_validation.error_ty.to_token_stream());
 
     nested_types
+        .chain(custom_error_types)
         .chain(nested_payload_types)
         .chain(final_validation_error_types)
 }
@@ -801,7 +846,7 @@ fn check_wrapper_variants(
 ) -> Result<()> {
     let mut wrapper_variants: Vec<Ident> = Vec::new();
     for field in fields {
-        if let FieldRule::Nested { wrapper_variant } = &field.rule {
+        if let Some(wrapper_variant) = field.wrapper_variant() {
             wrapper_variants.push(wrapper_variant.clone());
         }
     }
@@ -834,11 +879,12 @@ fn check_wrapper_variants(
 #[cfg(test)]
 mod tests {
     use proc_macro2::{Ident, Span};
+    use quote::ToTokens as _;
     use syn::{DeriveInput, Generics, Member, parse_str};
 
     use crate::{
         input::{
-            ERROR_PAYLOAD_SUBSET_MESSAGE, MARKER_MESSAGE, PAYLOAD_MARKER_MESSAGE,
+            CUSTOM_MESSAGE, ERROR_PAYLOAD_SUBSET_MESSAGE, MARKER_MESSAGE, PAYLOAD_MARKER_MESSAGE,
             PRIVATE_FIELD_MESSAGE, UNION_MESSAGE, VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE,
             parameter_name, parse, used_error_parameters,
         },
@@ -1234,6 +1280,127 @@ mod tests {
             rejection_messages("enum Command { #[validate(skip)] Halt }"),
             vec![VARIANT_MARKER_MESSAGE.to_owned()],
             "A marker on a unit variant must be rejected, because the variant carries no payload"
+        );
+    }
+
+    #[test]
+    fn a_custom_field_carries_its_function_and_its_wrapper() {
+        let intermediate_representation = accepted(
+            "struct Reading { #[validate(custom(check_label, error = LabelError))] label: Label }",
+        );
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+        let FieldRule::Custom {
+            fn_ident,
+            error_ty,
+            wrapper_variant,
+        } = &field.rule
+        else {
+            panic!("the custom marker must give a custom rule");
+        };
+
+        assert_eq!(
+            fn_ident.to_string(),
+            "check_label",
+            "The rule must carry the function of the marker"
+        );
+        assert_eq!(
+            error_ty.to_token_stream().to_string(),
+            "LabelError",
+            "The rule must carry the error type of the marker"
+        );
+        assert_eq!(
+            wrapper_variant.to_string(),
+            "LabelValidationError",
+            "The wrapper variant must follow the suffix rule of a nested wrapper"
+        );
+        assert!(
+            field.variant.is_none(),
+            "A custom field must carry no field enum variant, because it names itself in no shared error"
+        );
+    }
+
+    #[test]
+    fn a_custom_marker_without_its_error_is_rejected() {
+        assert_eq!(
+            rejection_messages("struct Reading { #[validate(custom(check_label))] label: Label }"),
+            vec![CUSTOM_MESSAGE.to_owned()],
+            "A custom marker without its error type must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_bare_custom_marker_is_rejected() {
+        assert_eq!(
+            rejection_messages("struct Reading { #[validate(custom)] label: Label }"),
+            vec![CUSTOM_MESSAGE.to_owned()],
+            "A custom marker without its arguments must be rejected with the arguments of the marker"
+        );
+    }
+
+    #[test]
+    fn a_custom_marker_with_extra_tokens_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "struct Reading { #[validate(custom(check_label, error = LabelError, extra))] \
+                 label: Label }"
+            ),
+            vec![CUSTOM_MESSAGE.to_owned()],
+            "A custom marker that carries a third argument must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_custom_marker_next_to_another_marker_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "struct Reading { #[validate(custom(check_value, error = ValueError), finite)] \
+                 value: f64 }"
+            ),
+            vec![MARKER_MESSAGE.to_owned()],
+            "A custom marker next to another marker must be rejected, because a field takes one marker"
+        );
+    }
+
+    #[test]
+    fn a_custom_marker_on_a_payload_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "enum Command { Extend(#[validate(custom(check_fraction, error = FractionError))] f64) }"
+            ),
+            vec![PAYLOAD_MARKER_MESSAGE.to_owned()],
+            "A custom marker on a payload must be rejected, because a variant declares no rule"
+        );
+    }
+
+    #[test]
+    fn a_custom_wrapper_that_collides_with_a_final_validation_wrapper_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "#[final_validation(validate_mass, error = MassSumError)] \
+                 struct Masses { #[validate(custom(check_mass, error = MassError))] mass: f64 }"
+            ),
+            vec![
+                "the generated error variant `MassValidationError` would be generated twice"
+                    .to_owned(),
+                "the same `MassValidationError` variant also comes from here".to_owned(),
+            ],
+            "A custom wrapper and a final validation wrapper that share a name must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_parameter_inside_a_custom_error_type_makes_the_error_enum_generic() {
+        let intermediate_representation = accepted(
+            "struct Reading<Number> { #[validate(custom(check_value, error = ValueError<Number>))] \
+             value: Number }",
+        );
+
+        assert!(
+            intermediate_representation.error_enum_is_generic,
+            "A parameter inside a custom error type must make the error enum generic"
         );
     }
 

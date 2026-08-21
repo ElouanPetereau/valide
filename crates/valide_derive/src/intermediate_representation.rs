@@ -48,6 +48,15 @@ pub(crate) enum FieldRule {
         /// Wrapper variant that carries the error of the nested type.
         wrapper_variant: Ident,
     },
+    /// A function of the validated type validates the value.
+    Custom {
+        /// Function that the generated field validator calls on a reference to the value.
+        fn_ident: Ident,
+        /// Error type that the function returns.
+        error_ty: Path,
+        /// Wrapper variant that carries the error of the function.
+        wrapper_variant: Ident,
+    },
     /// The value takes part in no validation at all.
     Skip,
 }
@@ -79,6 +88,18 @@ impl FieldIntermediateRepresentation {
         self.variant
             .as_ref()
             .expect("a range or a finite field always carries a variant")
+    }
+
+    /// Return the wrapper variant of the field, absent while the rule of the field reaches the generated error enum with no wrapper.
+    /// A nested field and a custom field each carry one, and a range, a finite or a skip field carries none.
+    pub(crate) fn wrapper_variant(&self) -> Option<&Ident> {
+        match &self.rule {
+            FieldRule::Nested { wrapper_variant }
+            | FieldRule::Custom {
+                wrapper_variant, ..
+            } => Some(wrapper_variant),
+            FieldRule::Range { .. } | FieldRule::Finite | FieldRule::Skip => None,
+        }
     }
 
     /// Return the identifier of the getter of the field.
@@ -258,7 +279,8 @@ impl TypeIntermediateRepresentation {
             .any(|field| matches!(field.rule, FieldRule::Finite))
     }
 
-    /// Return the wrapper variants of the validated type, the nested variants first, then the final validations and the nested fields after.
+    /// Return the wrapper variants of the validated type, the nested variants first, then the final validations and the fields after.
+    /// A nested field and a custom field share the field block, where both keep the declaration order of the fields.
     /// The order matches the order of the variants of the generated enum.
     pub(crate) fn wrapper_variants(&self) -> impl Iterator<Item = &Ident> {
         let payload_variants = self.variants.iter().filter_map(|variant| {
@@ -270,14 +292,24 @@ impl TypeIntermediateRepresentation {
             .final_validations
             .iter()
             .map(|final_validation| &final_validation.wrapper_variant);
-        let nested_variants = self.fields.iter().filter_map(|field| match &field.rule {
-            FieldRule::Nested { wrapper_variant } => Some(wrapper_variant),
-            FieldRule::Range { .. } | FieldRule::Finite | FieldRule::Skip => None,
-        });
+        let field_variants = self
+            .fields
+            .iter()
+            .filter_map(FieldIntermediateRepresentation::wrapper_variant);
 
-        payload_variants
-            .chain(final_variants)
-            .chain(nested_variants)
+        payload_variants.chain(final_variants).chain(field_variants)
+    }
+
+    /// Return the error type of every custom field of the validated type, in declaration order.
+    /// The generated error enum wraps such an error and reports it as its source.
+    pub(crate) fn custom_error_types(&self) -> impl Iterator<Item = &Path> {
+        self.fields.iter().filter_map(|field| match &field.rule {
+            FieldRule::Custom { error_ty, .. } => Some(error_ty),
+            FieldRule::Range { .. }
+            | FieldRule::Finite
+            | FieldRule::Nested { .. }
+            | FieldRule::Skip => None,
+        })
     }
 
     /// Return the declared type of every nested field and of every nested variant payload of the validated type.

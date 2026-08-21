@@ -1,4 +1,4 @@
-error: a field needs exactly one #[validate(...)] marker among range(...), finite, nested and skip
+error: a field needs exactly one #[validate(...)] marker among range(...), finite, nested, custom(...) and skip
  --> tests/ui/fail/skip_with_range.rs:5:22
   |
 5 |     #[validate(skip, range(0.0..=1.0))]
