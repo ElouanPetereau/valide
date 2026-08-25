@@ -1,7 +1,7 @@
 //! Generation of the validation error enum of a validated type.
 //!
 //! The generator emits one variant per range field, which carries the two evaluated bounds of the field and the rejected value.
-//! It emits the shared finite variant that carries the failing field.
+//! It emits one variant per finite field, which carries the rejected value.
 //! It emits one wrapper variant per nested variant of an enum, per final validation and per nested or custom field.
 //! A variant only exists when at least one field, one variant or one attribute can produce it.
 //! A wrapper variant reports the error it holds as its source.
@@ -12,7 +12,6 @@ use quote::quote;
 use crate::{
     expand::{ExpansionContext, doc, validate_trait},
     intermediate_representation::{FieldRule, TypeIntermediateRepresentation},
-    naming,
 };
 
 /// Generate the validation error enum of the validated type of `context`, with its [`Display`](core::fmt::Display) and its [`Error`](core::error::Error).
@@ -21,55 +20,59 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
     let vis = &intermediate_representation.vis;
     let type_ident = &intermediate_representation.ident;
     let error_ident = &intermediate_representation.error_ident;
-    let field_enum_ident = &intermediate_representation.field_enum_ident;
     let enum_doc = doc(&format!("Error type of the [`{type_ident}`] validation."));
-    let field_doc = doc("The field that failed the validation.");
     // Only a parameter that reaches a variant may reach the enum,
     // because an unused parameter of an enum is an error that the caller cannot fix
     let generic_declaration = generic_declaration(context);
     let (implementation_header, implementation_where_clause) = implementation_generics(context);
     let error_enum_type = context.error_type();
 
-    let has_finite = intermediate_representation.has_finite();
-
-    let out_of_range_variants = intermediate_representation
+    // A range field and a finite field each own a variant, which keeps the declaration order of the fields
+    let own_variants = intermediate_representation
         .fields
         .iter()
         .filter_map(|field| {
-            let error_variant = field.range_variant()?;
             let ty = &field.ty;
-            let variant_doc = doc(&format!(
-                "The value of the `{}` field is outside its valid range.",
-                field.logical_name
-            ));
-            let lower_doc = doc("Lower bound of the valid range of the field.");
-            let upper_doc = doc("Upper bound of the valid range of the field.");
             let value_doc = doc("Value that the validation rejected.");
 
-            Some(quote! {
-                #variant_doc
-                #error_variant {
-                    #lower_doc
-                    lower: ::core::ops::Bound<#ty>,
-                    #upper_doc
-                    upper: ::core::ops::Bound<#ty>,
-                    #value_doc
-                    value: #ty,
-                },
-            })
-        });
-    let not_finite = has_finite.then(|| {
-        let not_finite_variant = naming::not_finite_variant();
-        let variant_doc = doc("The field value is not a finite number.");
+            match &field.rule {
+                FieldRule::Range { error_variant, .. } => {
+                    let variant_doc = doc(&format!(
+                        "The value of the `{}` field is outside its valid range.",
+                        field.logical_name
+                    ));
+                    let lower_doc = doc("Lower bound of the valid range of the field.");
+                    let upper_doc = doc("Upper bound of the valid range of the field.");
 
-        quote! {
-            #variant_doc
-            #not_finite_variant {
-                #field_doc
-                field: #field_enum_ident,
-            },
-        }
-    });
+                    Some(quote! {
+                        #variant_doc
+                        #error_variant {
+                            #lower_doc
+                            lower: ::core::ops::Bound<#ty>,
+                            #upper_doc
+                            upper: ::core::ops::Bound<#ty>,
+                            #value_doc
+                            value: #ty,
+                        },
+                    })
+                }
+                FieldRule::Finite { error_variant } => {
+                    let variant_doc = doc(&format!(
+                        "The value of the `{}` field is not a finite number.",
+                        field.logical_name
+                    ));
+
+                    Some(quote! {
+                        #variant_doc
+                        #error_variant {
+                            #value_doc
+                            value: #ty,
+                        },
+                    })
+                }
+                FieldRule::Nested { .. } | FieldRule::Custom { .. } | FieldRule::Skip => None,
+            }
+        });
 
     let variant_wrappers = intermediate_representation
         .variants
@@ -137,11 +140,11 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
                     #wrapper_variant(#error_ty),
                 })
             }
-            FieldRule::Range { .. } | FieldRule::Finite | FieldRule::Skip => None,
+            FieldRule::Range { .. } | FieldRule::Finite { .. } | FieldRule::Skip => None,
         });
 
-    let display_body = display_body(intermediate_representation, has_finite);
-    let source_body = source_body(intermediate_representation, has_finite);
+    let display_body = display_body(intermediate_representation);
+    let source_body = source_body(intermediate_representation);
 
     quote! {
         #enum_doc
@@ -152,8 +155,7 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
         )]
         #[derive(::core::clone::Clone, ::core::cmp::PartialEq, ::core::fmt::Debug)]
         #vis enum #error_ident #generic_declaration {
-            #(#out_of_range_variants)*
-            #not_finite
+            #(#own_variants)*
             #(#variant_wrappers)*
             #(#final_wrappers)*
             #(#field_wrappers)*
@@ -204,33 +206,31 @@ fn implementation_generics(context: &ExpansionContext<'_>) -> (TokenStream, Toke
 
 /// Generate the body of the [`Display`](core::fmt::Display) implementation of the error enum of `intermediate_representation`.
 /// A range variant names its own field as a static text, then writes the two bounds it carries.
+/// A finite variant names its own field as a static text and writes nothing else.
 /// The rejected value stays in the variant for the caller and takes no part in the message.
-fn display_body(
-    intermediate_representation: &TypeIntermediateRepresentation,
-    has_finite: bool,
-) -> TokenStream {
+fn display_body(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
     let mut arms = Vec::new();
     for field in &intermediate_representation.fields {
-        let Some(error_variant) = field.range_variant() else {
-            continue;
-        };
-        let field_text = format!("{} must be within the range ", field.logical_name);
+        match &field.rule {
+            FieldRule::Range { error_variant, .. } => {
+                let field_text = format!("{} must be within the range ", field.logical_name);
 
-        arms.push(quote! {
-            Self::#error_variant { lower, upper, .. } => {
-                ::core::fmt::Formatter::write_str(f, #field_text)?;
-                ::valide::error_display::write_range(f, lower, upper)
+                arms.push(quote! {
+                    Self::#error_variant { lower, upper, .. } => {
+                        ::core::fmt::Formatter::write_str(f, #field_text)?;
+                        ::valide::error_display::write_range(f, lower, upper)
+                    }
+                });
             }
-        });
-    }
-    if has_finite {
-        let not_finite_variant = naming::not_finite_variant();
+            FieldRule::Finite { error_variant } => {
+                let field_text = format!("{} must be a finite number", field.logical_name);
 
-        arms.push(quote! {
-            Self::#not_finite_variant { field } => {
-                ::core::write!(f, "{field} must be a finite number")
+                arms.push(quote! {
+                    Self::#error_variant { .. } => ::core::fmt::Formatter::write_str(f, #field_text),
+                });
             }
-        });
+            FieldRule::Nested { .. } | FieldRule::Custom { .. } | FieldRule::Skip => {}
+        }
     }
     for wrapper_variant in intermediate_representation.wrapper_variants() {
         arms.push(quote! {
@@ -251,19 +251,12 @@ fn display_body(
 
 /// Generate the body of the `source` function of the error enum of `intermediate_representation`.
 /// Only a wrapper variant holds an error, so only a wrapper variant reports a source.
-fn source_body(
-    intermediate_representation: &TypeIntermediateRepresentation,
-    has_finite: bool,
-) -> TokenStream {
+fn source_body(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
     let mut arms = Vec::new();
-    let mut plain_patterns: Vec<TokenStream> = intermediate_representation
-        .range_variants()
+    let plain_patterns: Vec<TokenStream> = intermediate_representation
+        .own_variants()
         .map(|error_variant| quote! { Self::#error_variant { .. } })
         .collect();
-    if has_finite {
-        let not_finite_variant = naming::not_finite_variant();
-        plain_patterns.push(quote! { Self::#not_finite_variant { .. } });
-    }
     // Every variant that holds no error shares a single arm, so no two arms of the match hold the same body
     if !plain_patterns.is_empty() {
         arms.push(quote! { #(#plain_patterns)|* => ::core::option::Option::None, });

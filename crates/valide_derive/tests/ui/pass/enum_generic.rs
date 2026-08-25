@@ -27,8 +27,9 @@ impl Precision for f64 {
 }
 
 /// Measurement that must be a finite number at its own precision.
+/// The finite field reaches the generated error enum, which needs the `Debug` of the parameter.
 #[derive(Clone, PartialEq, Debug, valide_derive::Validate, valide_derive::Patch)]
-struct Measurement<Number: Precision>(
+struct Measurement<Number: Precision + Debug>(
     /// The measured value itself.
     #[validate(finite)]
     Number,
@@ -65,15 +66,20 @@ fn main() {
         "A skipped payload must be passed through at the double precision"
     );
 
-    // The generic wrapper variant of the enum holds the error of the nested measurement
-    assert_eq!(
-        Sample::<f64>::new(SampleDraft::Measured(MeasurementDraft(f64::NAN))).err(),
-        Some(SampleValidationError::MeasuredValidationError(
-            MeasurementValidationError::NotFinite {
-                field: MeasurementField::Value,
-            }
-        )),
-        "A not a number measurement must be rejected at the double precision"
+    // The generic wrapper variant of the enum holds the error of the nested measurement.
+    // A not a number value equals no value at all, so the rejection cannot be compared
+    let rejected_double = Sample::<f64>::new(SampleDraft::Measured(MeasurementDraft(f64::NAN)))
+        .err()
+        .expect("A not a number measurement must be rejected at the double precision");
+    let SampleValidationError::MeasuredValidationError(
+        MeasurementValidationError::ValueNotFinite { value },
+    ) = rejected_double
+    else {
+        panic!("The rejection must wrap the finite variant of the measurement payload");
+    };
+    assert!(
+        value.is_nan(),
+        "The rejection must carry the not a number value that it rejected"
     );
 
     let single = Sample::<f32>::new(SampleDraft::Missing).expect("A unit variant is always valid");
@@ -86,8 +92,8 @@ fn main() {
     assert_eq!(
         Sample::<f32>::new(SampleDraft::Measured(MeasurementDraft(f32::INFINITY))).err(),
         Some(SampleValidationError::MeasuredValidationError(
-            MeasurementValidationError::NotFinite {
-                field: MeasurementField::Value,
+            MeasurementValidationError::ValueNotFinite {
+                value: f32::INFINITY,
             }
         )),
         "An infinite measurement must be rejected at the single precision"

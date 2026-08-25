@@ -21,8 +21,10 @@ mod naming;
 /// Generate the `Validate` implementation of the annotated type.
 /// The `validate`, `final_validation` and `draft_attr` helper attributes drive the generation.
 ///
-/// The macro generates the field enum, the validation error enum, the draft mirror, one validator per field,
+/// The macro generates the validation error enum, the draft mirror, one validator per field,
 /// the aggregate validator, the `TryFrom` of the draft, the `new` constructor and the field getters.
+///
+/// The error enum carries one variant per range field and one variant per finite field, and each of them holds the value that the validation rejected.
 #[proc_macro_derive(Validate, attributes(validate, final_validation, draft_attr))]
 pub fn derive_validate(input: TokenStream) -> TokenStream {
     let derive_input = syn::parse_macro_input!(input as syn::DeriveInput);

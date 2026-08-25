@@ -56,8 +56,9 @@ impl<Number: Display> Display for AboveCeilingError<Number> {
 impl<Number: Debug + Display> Error for AboveCeilingError<Number> {}
 
 /// Measurement that must be a finite number at its own precision.
+/// The finite field reaches the generated error enum, which needs the `Debug` of the parameter.
 #[derive(Clone, valide_derive::Validate, valide_derive::Patch)]
-struct Measurement<Number: Precision>(
+struct Measurement<Number: Precision + Debug>(
     /// The measured value itself.
     #[validate(finite)]
     Number,
@@ -119,24 +120,32 @@ fn main() {
     );
     assert_eq!(double.sensor(), 7, "A skipped field must be passed through");
 
-    // The generated enum of the outer type wraps the error of the nested newtype
-    assert_eq!(
-        Reading::<f64>::new(reading_draft(f64::NAN, 1.0)).err(),
-        Some(ReadingValidationError::MeasurementValidationError(
-            MeasurementValidationError::NotFinite {
-                field: MeasurementField::Value,
-            }
-        )),
-        "A not a number measurement must be rejected at the double precision"
+    // The generated enum of the outer type wraps the error of the nested newtype.
+    // A not a number value equals no value at all, so the rejection cannot be compared
+    let rejected_measurement = Reading::<f64>::new(reading_draft(f64::NAN, 1.0))
+        .err()
+        .expect("A not a number measurement must be rejected at the double precision");
+    let ReadingValidationError::MeasurementValidationError(
+        MeasurementValidationError::ValueNotFinite { value },
+    ) = rejected_measurement
+    else {
+        panic!("The rejection must wrap the finite variant of the measurement field");
+    };
+    assert!(
+        value.is_nan(),
+        "The rejection must carry the not a number measurement that it rejected"
     );
 
-    // A field variant of the generic enum names its field and carries no parameter at all
-    assert_eq!(
-        Reading::<f64>::new(reading_draft(2.5, f64::NAN)).err(),
-        Some(ReadingValidationError::NotFinite {
-            field: ReadingField::Calibration,
-        }),
-        "A not a number calibration must be rejected at the double precision"
+    // A field variant of the generic enum carries the rejected value of its own field
+    let rejected_calibration = Reading::<f64>::new(reading_draft(2.5, f64::NAN))
+        .err()
+        .expect("A not a number calibration must be rejected at the double precision");
+    let ReadingValidationError::CalibrationNotFinite { value } = rejected_calibration else {
+        panic!("The rejection must be the finite variant of the calibration field");
+    };
+    assert!(
+        value.is_nan(),
+        "The rejection must carry the not a number calibration that it rejected"
     );
 
     let double_error = Reading::<f64>::new(reading_draft(150.5, 1.0))
@@ -193,8 +202,8 @@ fn main() {
     assert_eq!(
         Reading::<f32>::new(reading_draft(f32::INFINITY, 1.0)).err(),
         Some(ReadingValidationError::MeasurementValidationError(
-            MeasurementValidationError::NotFinite {
-                field: MeasurementField::Value,
+            MeasurementValidationError::ValueNotFinite {
+                value: f32::INFINITY,
             }
         )),
         "An infinite measurement must be rejected at the single precision"

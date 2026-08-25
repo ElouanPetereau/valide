@@ -92,7 +92,7 @@ const FINAL_VALIDATION_MESSAGE: &str =
 const DRAFT_ATTR_MESSAGE: &str =
     "#[draft_attr(...)] takes the attribute to re-emit on the generated draft as its payload";
 /// Message of the rejection of a generic parameter that the generated error enum cannot carry.
-const ERROR_PAYLOAD_SUBSET_MESSAGE: &str = "the generated error enum must carry every generic parameter or none, and this parameter appears in no range field type, in no nested type and in no error type that the enum carries";
+const ERROR_PAYLOAD_SUBSET_MESSAGE: &str = "the generated error enum must carry every generic parameter or none, and this parameter appears in no range or finite field type, in no nested type and in no error type that the enum carries";
 
 /// Parse the given `derive_input` into the intermediate representation of a validated type.
 /// Return every grammar error found. A single compilation reports all of them.
@@ -148,9 +148,6 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
     if let Err(error) = check_error_enum_variants(&fields, &variants, &final_validations) {
         errors.push(error);
     }
-    if let Err(error) = check_field_enum_variants(&fields) {
-        errors.push(error);
-    }
     let used_parameters = used_error_parameters(
         &derive_input.generics,
         &fields,
@@ -165,7 +162,6 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
     let ident = derive_input.ident.clone();
     let generics = derive_input.generics.clone();
     let draft_ident = naming::suffixed_ident(&ident, naming::DRAFT_SUFFIX);
-    let field_enum_ident = naming::suffixed_ident(&ident, naming::FIELD_ENUM_SUFFIX);
     let error_ident = naming::suffixed_ident(&ident, naming::VALIDATION_ERROR_SUFFIX);
     // The check above rejected every proper subset,
     // so a single parameter that reaches an error payload means that they all reach one
@@ -176,7 +172,6 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
         vis: derive_input.vis.clone(),
         generics,
         draft_ident,
-        field_enum_ident,
         error_ident,
         error_enum_is_generic,
         shape,
@@ -318,24 +313,11 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
         return Err(Error::new_spanned(extra_marker, MARKER_MESSAGE));
     }
 
-    // The validator and the setter of every field derive their names from the logical name,
-    // so the check runs before the rule tells whether the field also carries a variant
-    let field_variant = naming::field_variant(&logical_name, name_span)?;
     let rule = parse_field_marker(marker, &logical_name, name_span)?;
-    // A finite field is the only one that names itself inside a shared error,
-    // so it is the only rule that gets a field enum variant
-    let variant = match &rule {
-        FieldRule::Finite => Some(field_variant),
-        FieldRule::Range { .. }
-        | FieldRule::Nested { .. }
-        | FieldRule::Custom { .. }
-        | FieldRule::Skip => None,
-    };
 
     Ok(FieldIntermediateRepresentation {
         member,
         logical_name,
-        variant,
         ty: field.ty.clone(),
         docs,
         passthrough,
@@ -373,7 +355,9 @@ fn parse_field_marker(
         return Err(Error::new_spanned(&marker, MARKER_MESSAGE));
     };
     if path.is_ident(FINITE_MARKER) {
-        return Ok(FieldRule::Finite);
+        return Ok(FieldRule::Finite {
+            error_variant: naming::not_finite_variant(logical_name, name_span)?,
+        });
     }
     if path.is_ident(NESTED_MARKER) {
         return Ok(FieldRule::Nested {
@@ -745,6 +729,7 @@ fn used_error_parameters<'generics>(
 
 /// Return the tokens of every type that reaches the generated error enum of a validated type.
 /// A range field contributes its declared type, which the variant of the field carries twice as a bound and once as the rejected value.
+/// A finite field contributes its declared type, which the variant of the field carries once as the rejected value.
 /// A nested field contributes its declared type, whose own error the enum wraps.
 /// A nested variant payload contributes its declared type the same way.
 /// A custom field contributes the error type that its function returns.
@@ -758,6 +743,10 @@ fn error_payload_types(
         .iter()
         .filter(|field| matches!(field.rule, FieldRule::Range { .. }))
         .map(|field| field.ty.to_token_stream());
+    let finite_types = fields
+        .iter()
+        .filter(|field| matches!(field.rule, FieldRule::Finite { .. }))
+        .map(|field| field.ty.to_token_stream());
     let nested_types = fields
         .iter()
         .filter(|field| matches!(field.rule, FieldRule::Nested { .. }))
@@ -765,7 +754,7 @@ fn error_payload_types(
     let custom_error_types = fields.iter().filter_map(|field| match &field.rule {
         FieldRule::Custom { error_ty, .. } => Some(error_ty.to_token_stream()),
         FieldRule::Range { .. }
-        | FieldRule::Finite
+        | FieldRule::Finite { .. }
         | FieldRule::Nested { .. }
         | FieldRule::Skip => None,
     });
@@ -779,6 +768,7 @@ fn error_payload_types(
         .map(|final_validation| final_validation.error_ty.to_token_stream());
 
     range_types
+        .chain(finite_types)
         .chain(nested_types)
         .chain(custom_error_types)
         .chain(nested_payload_types)
@@ -871,30 +861,8 @@ fn check_error_parameters(generics: &Generics, used_parameters: &[&GenericParam]
     accumulated(errors)
 }
 
-/// Check that the field enum variants generated for `fields` are all distinct.
-fn check_field_enum_variants(fields: &[FieldIntermediateRepresentation]) -> Result<()> {
-    let variants: Vec<Ident> = fields
-        .iter()
-        .filter_map(|field| field.variant.clone())
-        .collect();
-
-    let Some((first, second)) = naming::first_collision(&variants) else {
-        return Ok(());
-    };
-    let mut error = Error::new(
-        second.span(),
-        format!("the generated field variant `{second}` would be generated twice"),
-    );
-    error.combine(Error::new(
-        first.span(),
-        format!("`{first}` is already generated here"),
-    ));
-
-    Err(error)
-}
-
 /// Check that the variants generated for the error enum of a validated type are all distinct.
-/// The enum carries one variant per range field of `fields`, the shared finite variant,
+/// The enum carries one variant per range field and per finite field of `fields`,
 /// and one wrapper variant per nested field of `fields`, per custom field of `fields`,
 /// per nested payload of `variants` and per final validation of `final_validations`.
 fn check_error_enum_variants(
@@ -904,16 +872,9 @@ fn check_error_enum_variants(
 ) -> Result<()> {
     let mut error_variants: Vec<Ident> = Vec::new();
     for field in fields {
-        if let Some(range_variant) = field.range_variant() {
-            error_variants.push(range_variant.clone());
+        if let Some(own_variant) = field.own_variant() {
+            error_variants.push(own_variant.clone());
         }
-    }
-    // Every finite field shares a single variant, so one finite field is enough to generate it
-    if fields
-        .iter()
-        .any(|field| matches!(field.rule, FieldRule::Finite))
-    {
-        error_variants.push(naming::not_finite_variant());
     }
     for field in fields {
         if let Some(wrapper_variant) = field.wrapper_variant() {
@@ -974,7 +935,6 @@ mod tests {
         FieldIntermediateRepresentation {
             member: Member::Named(ident("value")),
             logical_name: "value".to_owned(),
-            variant: None,
             ty: parse_str(declared_type).expect("the tested field type must parse"),
             docs: Vec::new(),
             passthrough: Vec::new(),
@@ -986,12 +946,25 @@ mod tests {
         }
     }
 
+    /// Build a finite field whose declared type is `declared_type`.
+    fn finite_field(declared_type: &str) -> FieldIntermediateRepresentation {
+        FieldIntermediateRepresentation {
+            member: Member::Named(ident("value")),
+            logical_name: "value".to_owned(),
+            ty: parse_str(declared_type).expect("the tested field type must parse"),
+            docs: Vec::new(),
+            passthrough: Vec::new(),
+            rule: FieldRule::Finite {
+                error_variant: ident("ValueNotFinite"),
+            },
+        }
+    }
+
     /// Build a nested field whose declared type is `declared_type`.
     fn nested_field(declared_type: &str) -> FieldIntermediateRepresentation {
         FieldIntermediateRepresentation {
             member: Member::Named(ident("inner")),
             logical_name: "inner".to_owned(),
-            variant: None,
             ty: parse_str(declared_type).expect("the tested field type must parse"),
             docs: Vec::new(),
             passthrough: Vec::new(),
@@ -1425,10 +1398,6 @@ mod tests {
             "LabelValidationError",
             "The wrapper variant must follow the suffix rule of a nested wrapper"
         );
-        assert!(
-            field.variant.is_none(),
-            "A custom field must carry no field enum variant, because it names itself in no shared error"
-        );
     }
 
     #[test]
@@ -1598,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn a_range_field_carries_its_error_variant_and_no_field_variant() {
+    fn a_range_field_carries_its_error_variant() {
         let intermediate_representation =
             accepted("struct Spacecraft { #[validate(range(0.0..=1.0))] bus_mass: f64 }");
         let field = intermediate_representation
@@ -1613,10 +1582,6 @@ mod tests {
             error_variant.to_string(),
             "BusMassOutOfRange",
             "The rule must carry the error enum variant of the field"
-        );
-        assert!(
-            field.variant.is_none(),
-            "A range field must carry no field enum variant, because it names itself in no shared error"
         );
     }
 
@@ -1657,6 +1622,63 @@ mod tests {
                 "the same `SunShadowOutOfRange` variant also comes from here".to_owned(),
             ],
             "Two range fields whose names give the same error variant must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_finite_field_carries_its_error_variant() {
+        let intermediate_representation =
+            accepted("struct Spacecraft { #[validate(finite)] area: f64 }");
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+        let FieldRule::Finite { error_variant } = &field.rule else {
+            panic!("the finite marker must give a finite rule");
+        };
+
+        assert_eq!(
+            error_variant.to_string(),
+            "AreaNotFinite",
+            "The rule must carry the error enum variant of the field"
+        );
+    }
+
+    #[test]
+    fn a_finite_field_type_reaches_an_error_payload() {
+        let fields = [finite_field("Number")];
+
+        assert_eq!(
+            used_names("<Number>", &fields, &[]),
+            "Number",
+            "The declared type of a finite field must reach the result"
+        );
+    }
+
+    #[test]
+    fn a_parameter_inside_a_finite_field_type_makes_the_error_enum_generic() {
+        let intermediate_representation =
+            accepted("struct Reading<Number> { #[validate(finite)] measurement: Number }");
+
+        assert!(
+            intermediate_representation.error_enum_is_generic,
+            "A finite rule on a generic parameter must make the error enum generic"
+        );
+    }
+
+    #[test]
+    fn two_finite_fields_that_collide_are_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "struct Spacecraft { #[validate(finite)] sun_shadow: f64, \
+                 #[validate(finite)] sunShadow: f64 }"
+            ),
+            vec![
+                "the generated error variant `SunShadowNotFinite` would be generated twice"
+                    .to_owned(),
+                "the same `SunShadowNotFinite` variant also comes from here".to_owned(),
+            ],
+            "Two finite fields whose names give the same error variant must be rejected"
         );
     }
 }

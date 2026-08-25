@@ -15,7 +15,6 @@ use crate::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
         VariantKind,
     },
-    naming,
 };
 
 /// Generate the validation functions of the draft of the validated type of `context`.
@@ -137,7 +136,6 @@ fn field_validator(
     // so it names the error enum without them
     let error_ident = &intermediate_representation.error_ident;
     let error_enum_type = context.error_type();
-    let field_enum_ident = &intermediate_representation.field_enum_ident;
     let member = &field.member;
     let validator = field.validator_ident();
     let validator_doc = doc(&format!("Validate the `{}` field.", field.logical_name));
@@ -172,14 +170,12 @@ fn field_validator(
                 }
             }
         }
-        FieldRule::Finite => {
-            let variant = field.enum_variant();
-            let not_finite_variant = naming::not_finite_variant();
-
+        // The check calls the unqualified function, so a generic field reads it from the bound of its own type
+        FieldRule::Finite { error_variant } => {
             quote! {
                 if !self.#member.is_finite() {
-                    return ::core::result::Result::Err(#error_ident::#not_finite_variant {
-                        field: #field_enum_ident::#variant,
+                    return ::core::result::Result::Err(#error_ident::#error_variant {
+                        value: ::core::clone::Clone::clone(&self.#member),
                     });
                 }
             }

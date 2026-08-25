@@ -65,12 +65,16 @@ fn main() {
 
     let mut not_finite = valid_draft();
     not_finite.part = f64::NAN;
-    assert_eq!(
-        Whole::new(not_finite).err(),
-        Some(WholeValidationError::NotFinite {
-            field: WholeField::Part,
-        }),
-        "A finite field must reject a not a number value"
+    // A not a number value equals no value at all, so the rejection cannot be compared
+    let not_finite_error = Whole::new(not_finite)
+        .err()
+        .expect("A finite field must reject a not a number value");
+    let WholeValidationError::PartNotFinite { value } = not_finite_error else {
+        panic!("The rejection must be the finite variant of the part field");
+    };
+    assert!(
+        value.is_nan(),
+        "The rejection must carry the not a number value that it rejected"
     );
 
     let mut too_heavy = valid_draft();

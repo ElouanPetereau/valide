@@ -49,10 +49,11 @@ where
     Number: Clone + PartialOrd + Debug;
 
 /// Reading whose measurement carries the precision of the parameter.
+/// The finite field reaches the generated error enum, which needs the `Debug` of the parameter.
 #[derive(Clone, valide_derive::Validate, valide_derive::Patch)]
 struct Reading<Number>
 where
-    Number: Bounded01 + Clone,
+    Number: Bounded01 + Clone + Debug,
 {
     /// Measured value.
     #[validate(finite)]
@@ -147,25 +148,29 @@ fn main() {
         "A rejected patch must leave the measurement untouched"
     );
 
-    assert_eq!(
-        Reading::<f32>::new(ReadingDraft {
-            measurement: f32::NAN,
-            sensor: 0,
-        })
-        .err(),
-        Some(ReadingValidationError::NotFinite {
-            field: ReadingField::Measurement,
-        }),
-        "A not a number value must be rejected at the single precision"
+    // A not a number value equals no value at all, so the rejection cannot be compared
+    let rejected_single = Reading::<f32>::new(ReadingDraft {
+        measurement: f32::NAN,
+        sensor: 0,
+    })
+    .err()
+    .expect("A not a number value must be rejected at the single precision");
+    let ReadingValidationError::MeasurementNotFinite { value } = rejected_single else {
+        panic!("The rejection must be the finite variant of the measurement field");
+    };
+    assert!(
+        value.is_nan(),
+        "The rejection must carry the not a number value that it rejected"
     );
+
     assert_eq!(
         Reading::<f64>::new(ReadingDraft {
             measurement: f64::INFINITY,
             sensor: 0,
         })
         .err(),
-        Some(ReadingValidationError::NotFinite {
-            field: ReadingField::Measurement,
+        Some(ReadingValidationError::MeasurementNotFinite {
+            value: f64::INFINITY,
         }),
         "An infinite value must be rejected at the double precision"
     );

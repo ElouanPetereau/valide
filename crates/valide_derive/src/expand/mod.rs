@@ -12,7 +12,6 @@ use crate::intermediate_representation::TypeIntermediateRepresentation;
 pub(crate) mod construction;
 pub(crate) mod draft;
 pub(crate) mod error_enum;
-pub(crate) mod field_enum;
 pub(crate) mod patch;
 pub(crate) mod validators;
 
@@ -210,7 +209,6 @@ pub(crate) fn expand_validate(
     let context = ExpansionContext::new(intermediate_representation);
     let assertions = context.nested_assertions(&validate_trait());
     let error_assertions = context.wrapped_error_assertions();
-    let field_enum = field_enum::expand(&context);
     let error_enum = error_enum::expand(&context);
     let draft = draft::expand(&context);
     let validators = validators::expand(&context);
@@ -219,7 +217,6 @@ pub(crate) fn expand_validate(
     quote! {
         #assertions
         #error_assertions
-        #field_enum
         #error_enum
         #draft
         #validators

@@ -60,8 +60,8 @@ mod tests {
 
     use self::model::{
         CelestialBodyDraft, CelestialBodyKind, CelestialBodyKindDraft,
-        InertiaMatrixSerializableDraft, InertiaMatrixSerializableField,
-        InertiaMatrixSerializableValidationError, ShadowFractionDraft, SpacecraftDraft,
+        InertiaMatrixSerializableDraft, InertiaMatrixSerializableValidationError,
+        ShadowFractionDraft, SpacecraftDraft,
     };
 
     /// Domain model that exercises the two derives of the crate.
@@ -138,41 +138,61 @@ mod tests {
             "xy",
             |draft, value| draft.xy = value,
             InertiaMatrixSerializableDraft::validate_xy,
-            InertiaMatrixSerializableField::Xy,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::XyNotFinite { value } => Some(value),
+                _ => None,
+            },
         ),
         (
             "xz",
             |draft, value| draft.xz = value,
             InertiaMatrixSerializableDraft::validate_xz,
-            InertiaMatrixSerializableField::Xz,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::XzNotFinite { value } => Some(value),
+                _ => None,
+            },
         ),
         (
             "yx",
             |draft, value| draft.yx = value,
             InertiaMatrixSerializableDraft::validate_yx,
-            InertiaMatrixSerializableField::Yx,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::YxNotFinite { value } => Some(value),
+                _ => None,
+            },
         ),
         (
             "yz",
             |draft, value| draft.yz = value,
             InertiaMatrixSerializableDraft::validate_yz,
-            InertiaMatrixSerializableField::Yz,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::YzNotFinite { value } => Some(value),
+                _ => None,
+            },
         ),
         (
             "zx",
             |draft, value| draft.zx = value,
             InertiaMatrixSerializableDraft::validate_zx,
-            InertiaMatrixSerializableField::Zx,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::ZxNotFinite { value } => Some(value),
+                _ => None,
+            },
         ),
         (
             "zy",
             |draft, value| draft.zy = value,
             InertiaMatrixSerializableDraft::validate_zy,
-            InertiaMatrixSerializableField::Zy,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::ZyNotFinite { value } => Some(value),
+                _ => None,
+            },
         ),
     ];
 
-    /// Name, setter, validator and field enum variant of one inertia draft field.
+    /// Name, setter, validator and finite payload reader of one off-diagonal inertia draft field.
+    /// An off-diagonal field carries a finite rule, whose error variant belongs to the field itself,
+    /// so the case reads the payload of that variant.
     /// Each case exercises one field validator.
     type InertiaFieldCase = (
         &'static str,
@@ -180,12 +200,16 @@ mod tests {
         fn(
             &InertiaMatrixSerializableDraft<f64>,
         ) -> Result<(), InertiaMatrixSerializableValidationError<f64>>,
-        InertiaMatrixSerializableField,
+        FinitePayloadReader,
     );
+
+    /// Reader of the value that the error variant of one finite inertia field carries.
+    /// The reader returns nothing for every other variant of the error enum.
+    type FinitePayloadReader = fn(&InertiaMatrixSerializableValidationError<f64>) -> Option<f64>;
 
     /// Name, setter, validator and range payload reader of one diagonal inertia draft field.
     /// A diagonal field carries a range rule, whose error variant belongs to the field itself,
-    /// so the case reads the payload of that variant instead of naming a field enum variant.
+    /// so the case reads the payload of that variant.
     type DiagonalInertiaFieldCase = (
         &'static str,
         fn(&mut InertiaMatrixSerializableDraft<f64>, f64),
@@ -683,10 +707,24 @@ mod tests {
         /// Finiteness of the six off-diagonal inertia entries.
         mod inertia_matrix_off_diagonal {
             use crate::tests::{
-                OFF_DIAGONAL_INERTIA_FIELD_CASES, diagonal_inertia_draft_with_precision,
-                model::{InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError},
-                validate_inertia_field,
+                FinitePayloadReader, OFF_DIAGONAL_INERTIA_FIELD_CASES, assert_float_eq,
+                diagonal_inertia_draft_with_precision,
+                model::InertiaMatrixSerializableValidationError, validate_inertia_field,
             };
+
+            /// Return the value that the finite rejection `error` of the off-diagonal field
+            /// `field_name` carries, read through `finite_payload`.
+            fn rejected_off_diagonal_value(
+                error: &InertiaMatrixSerializableValidationError<f64>,
+                finite_payload: FinitePayloadReader,
+                field_name: &str,
+            ) -> f64 {
+                let Some(value) = finite_payload(error) else {
+                    panic!("The {field_name} rejection must be the finite variant of the field");
+                };
+
+                value
+            }
 
             #[test]
             fn accepts_zero_negative_and_large_finite() {
@@ -704,15 +742,17 @@ mod tests {
 
             #[test]
             fn rejects_nan_at_f64_precision() {
-                for (field_name, set_field, validate_field, expected_field) in
+                for (field_name, set_field, validate_field, finite_payload) in
                     OFF_DIAGONAL_INERTIA_FIELD_CASES
                 {
-                    assert_eq!(
-                        validate_inertia_field(set_field, validate_field, f64::NAN),
-                        Err(InertiaMatrixSerializableValidationError::NotFinite {
-                            field: expected_field,
-                        }),
-                        "A not a number value must be rejected for the {field_name} field"
+                    // A not a number value equals no value at all,
+                    // so the rejection cannot be compared
+                    let error = validate_inertia_field(set_field, validate_field, f64::NAN)
+                        .expect_err("A not a number value must be rejected");
+
+                    assert!(
+                        rejected_off_diagonal_value(&error, finite_payload, field_name).is_nan(),
+                        "The {field_name} rejection must carry the not a number value that it rejected"
                     );
                 }
             }
@@ -721,42 +761,49 @@ mod tests {
             fn rejects_nan_at_f32_precision() {
                 let mut draft = diagonal_inertia_draft_with_precision(2.0_f32, 3.0_f32, 4.0_f32);
                 draft.xy = f32::NAN;
+                // A not a number value equals no value at all, so the rejection cannot be compared
+                let error = draft
+                    .validate_xy()
+                    .expect_err("A not a number off-diagonal entry must be rejected");
+                let InertiaMatrixSerializableValidationError::XyNotFinite { value } = error else {
+                    panic!("The rejection must be the finite variant of the xy field");
+                };
 
-                assert_eq!(
-                    draft.validate_xy(),
-                    Err(InertiaMatrixSerializableValidationError::NotFinite {
-                        field: InertiaMatrixSerializableField::Xy,
-                    }),
-                    "A not a number off-diagonal entry must be rejected at the single precision"
+                assert!(
+                    value.is_nan(),
+                    "The rejection must carry the not a number value that it rejected"
                 );
             }
 
             #[test]
             fn rejects_positive_infinity() {
-                for (field_name, set_field, validate_field, expected_field) in
+                for (field_name, set_field, validate_field, finite_payload) in
                     OFF_DIAGONAL_INERTIA_FIELD_CASES
                 {
-                    assert_eq!(
-                        validate_inertia_field(set_field, validate_field, f64::INFINITY),
-                        Err(InertiaMatrixSerializableValidationError::NotFinite {
-                            field: expected_field,
-                        }),
-                        "The positive infinity must be rejected for the {field_name} field"
+                    let error = validate_inertia_field(set_field, validate_field, f64::INFINITY)
+                        .expect_err("The positive infinity must be rejected");
+
+                    assert_float_eq(
+                        rejected_off_diagonal_value(&error, finite_payload, field_name),
+                        f64::INFINITY,
+                        &format!("rejected {field_name} value"),
                     );
                 }
             }
 
             #[test]
             fn rejects_negative_infinity() {
-                for (field_name, set_field, validate_field, expected_field) in
+                for (field_name, set_field, validate_field, finite_payload) in
                     OFF_DIAGONAL_INERTIA_FIELD_CASES
                 {
-                    assert_eq!(
-                        validate_inertia_field(set_field, validate_field, f64::NEG_INFINITY),
-                        Err(InertiaMatrixSerializableValidationError::NotFinite {
-                            field: expected_field,
-                        }),
-                        "The negative infinity must be rejected for the {field_name} field"
+                    let error =
+                        validate_inertia_field(set_field, validate_field, f64::NEG_INFINITY)
+                            .expect_err("The negative infinity must be rejected");
+
+                    assert_float_eq(
+                        rejected_off_diagonal_value(&error, finite_payload, field_name),
+                        f64::NEG_INFINITY,
+                        &format!("rejected {field_name} value"),
                     );
                 }
             }
@@ -978,6 +1025,28 @@ mod tests {
             }
         }
 
+        /// Finiteness of the spacecraft area.
+        mod spacecraft_area {
+            use crate::tests::spacecraft_draft_with_area;
+
+            #[test]
+            fn area_rejection_displays_its_field_and_keeps_its_value() {
+                let error = spacecraft_draft_with_area(f64::NAN)
+                    .validate_area()
+                    .expect_err("A not a number area must be rejected");
+
+                assert_eq!(
+                    error.to_string(),
+                    "area must be a finite number",
+                    "The rejection must name the field alone"
+                );
+                assert!(
+                    format!("{error:?}").contains("NaN"),
+                    "The Debug of the rejection must carry the not a number value that it rejected"
+                );
+            }
+        }
+
         /// Order guarantees of the fail fast validation.
         mod fail_fast_order {
             use core::ops::Bound;
@@ -985,8 +1054,8 @@ mod tests {
             use crate::tests::{
                 VALID_INERTIA_DRAFT, VALID_SPACECRAFT_DRAFT, diagonal_inertia_draft,
                 model::{
-                    InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-                    SpacecraftDraft, SpacecraftValidationError,
+                    InertiaMatrixSerializableValidationError, SpacecraftDraft,
+                    SpacecraftValidationError,
                 },
             };
 
@@ -1013,13 +1082,19 @@ mod tests {
                 draft.xy = f64::NAN;
                 // The mirrored entry stays at zero so the pair is also asymmetric
                 draft.yx = 0.0;
+                // A not a number value equals no value at all, so the rejection cannot be compared
+                let error = draft
+                    .validate()
+                    .expect_err("A not a number off-diagonal entry must be rejected");
+                let InertiaMatrixSerializableValidationError::XyNotFinite { value } = error else {
+                    panic!(
+                        "The field validators must run before the realizability validation, so the rejection must be the finite variant of the xy field"
+                    );
+                };
 
-                assert_eq!(
-                    draft.validate(),
-                    Err(InertiaMatrixSerializableValidationError::NotFinite {
-                        field: InertiaMatrixSerializableField::Xy,
-                    }),
-                    "The field validators must run before the realizability validation"
+                assert!(
+                    value.is_nan(),
+                    "The rejection must carry the not a number value that it rejected"
                 );
             }
 
@@ -1349,7 +1424,7 @@ mod tests {
                     CelestialBodyKind, CelestialBodyKindDraft, CelestialBodyKindValidationError,
                     CelestialBodyValidationError, InertiaMatrixSerializable,
                     InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
-                    ShadowFractionValidationError, Spacecraft, SpacecraftDraft, SpacecraftField,
+                    ShadowFractionValidationError, Spacecraft, SpacecraftDraft,
                     SpacecraftMassSumValidationError, SpacecraftValidationError,
                 },
                 spacecraft_draft_with_area, spacecraft_draft_with_masses,
@@ -1490,12 +1565,17 @@ mod tests {
 
         #[test]
         fn spacecraft_new_rejects_nan_area_at_f64_precision() {
-            assert_eq!(
-                Spacecraft::new(spacecraft_draft_with_area(f64::NAN)).err(),
-                Some(SpacecraftValidationError::NotFinite {
-                    field: SpacecraftField::Area,
-                }),
-                "A not a number area must be rejected at the double precision"
+            // A not a number value equals no value at all, so the rejection cannot be compared
+            let error = Spacecraft::new(spacecraft_draft_with_area(f64::NAN))
+                .err()
+                .expect("A not a number area must be rejected at the double precision");
+            let SpacecraftValidationError::AreaNotFinite { value } = error else {
+                panic!("The rejection must be the finite variant of the area field");
+            };
+
+            assert!(
+                value.is_nan(),
+                "The rejection must carry the not a number value that it rejected"
             );
         }
 
@@ -1503,8 +1583,8 @@ mod tests {
         fn spacecraft_new_rejects_infinite_area_at_f32_precision() {
             assert_eq!(
                 Spacecraft::<f32>::new(spacecraft_draft_with_area(f32::INFINITY)).err(),
-                Some(SpacecraftValidationError::NotFinite {
-                    field: SpacecraftField::Area,
+                Some(SpacecraftValidationError::AreaNotFinite {
+                    value: f32::INFINITY,
                 }),
                 "The positive infinity must be rejected as an area at the single precision"
             );
@@ -1802,8 +1882,8 @@ mod tests {
                     CelestialBodyKind, CelestialBodyKindDraft, InertiaMatrix,
                     InertiaMatrixRealizabilityValidationError, InertiaMatrixSerializable,
                     InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
-                    ShadowFractionValidationError, Spacecraft, SpacecraftField,
-                    SpacecraftMassSumValidationError, SpacecraftValidationError,
+                    ShadowFractionValidationError, Spacecraft, SpacecraftMassSumValidationError,
+                    SpacecraftValidationError,
                 },
                 spacecraft_draft_with_masses,
             },
@@ -1973,13 +2053,17 @@ mod tests {
         fn spacecraft_set_area_rejects_nan_and_leaves_state_unchanged() {
             let mut spacecraft = Spacecraft::new(VALID_SPACECRAFT_DRAFT)
                 .expect("The valid spacecraft draft must build a spacecraft");
+            // A not a number value equals no value at all, so the rejection cannot be compared
+            let error = spacecraft
+                .set_area(f64::NAN)
+                .expect_err("A not a number area update must be rejected");
+            let SpacecraftValidationError::AreaNotFinite { value } = error else {
+                panic!("The rejection must be the finite variant of the area field");
+            };
 
-            assert_eq!(
-                spacecraft.set_area(f64::NAN),
-                Err(SpacecraftValidationError::NotFinite {
-                    field: SpacecraftField::Area,
-                }),
-                "A not a number area update must be rejected"
+            assert!(
+                value.is_nan(),
+                "The rejection must carry the not a number value that it rejected"
             );
             assert_float_eq(*spacecraft.area(), 12.5, "area after the rejection");
         }

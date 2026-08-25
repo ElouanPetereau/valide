@@ -1,6 +1,6 @@
 //! Naming rules of every generated item.
 //!
-//! The module converts snake case field names to their Pascal case field enum variants.
+//! The module converts snake case field names to the Pascal case variants of the generated error enum.
 //! It derives the wrapper variant names of the nested errors and of the final validations.
 //! It also detects the collisions between the derived names.
 //!
@@ -11,14 +11,12 @@ use syn::{Error, Result, parse_str};
 
 /// Suffix of the generated draft type.
 pub(crate) const DRAFT_SUFFIX: &str = "Draft";
-/// Suffix of the generated field enum.
-pub(crate) const FIELD_ENUM_SUFFIX: &str = "Field";
 /// Suffix of the generated validation error enum and of every one of its wrapper variants.
 pub(crate) const VALIDATION_ERROR_SUFFIX: &str = "ValidationError";
 /// Suffix of the error enum variant of a range field.
 const OUT_OF_RANGE_SUFFIX: &str = "OutOfRange";
-/// Name of the error enum variant that every finite field shares.
-const NOT_FINITE_VARIANT: &str = "NotFinite";
+/// Suffix of the error enum variant of a finite field.
+const NOT_FINITE_SUFFIX: &str = "NotFinite";
 /// Prefix that the generator removes from a final validation name to build its wrapper variant.
 const VALIDATION_FUNCTION_PREFIX: &str = "validate_";
 /// Prefix of a raw identifier, which no derived name carries.
@@ -51,15 +49,10 @@ pub(crate) fn suffixed_ident(base: &Ident, suffix: &str) -> Ident {
     Ident::new(&format!("{}{suffix}", plain_name(&name)), base.span())
 }
 
-/// Build the field enum variant of the field `logical_name`, with the span `span`.
+/// Build the error enum variant of the finite field `logical_name`, with the span `span`.
 /// Return an error when the name builds no identifier.
-pub(crate) fn field_variant(logical_name: &str, span: Span) -> Result<Ident> {
-    pascal_case_ident(logical_name, "", span)
-}
-
-/// Build the error enum variant that every finite field shares, with the span of the macro.
-pub(crate) fn not_finite_variant() -> Ident {
-    Ident::new(NOT_FINITE_VARIANT, Span::call_site())
+pub(crate) fn not_finite_variant(logical_name: &str, span: Span) -> Result<Ident> {
+    pascal_case_ident(logical_name, NOT_FINITE_SUFFIX, span)
 }
 
 /// Build the error enum variant of the range field `logical_name`, with the span `span`.
@@ -125,8 +118,8 @@ mod tests {
     use syn::Result;
 
     use crate::naming::{
-        DRAFT_SUFFIX, field_variant, final_validation_wrapper_variant, first_collision,
-        nested_wrapper_variant, range_variant, suffixed_ident, to_pascal_case,
+        DRAFT_SUFFIX, final_validation_wrapper_variant, first_collision, nested_wrapper_variant,
+        not_finite_variant, range_variant, suffixed_ident, to_pascal_case,
     };
 
     /// Build an identifier from `name`, with the call site span.
@@ -183,23 +176,28 @@ mod tests {
     }
 
     #[test]
-    fn field_variant_of_a_newtype_value() {
+    fn not_finite_variant_appends_the_not_finite_suffix() {
         assert_eq!(
-            variant_name(field_variant("value", Span::call_site())),
-            "Value",
-            "The logical name of a newtype field must give the Value variant"
+            variant_name(not_finite_variant("area", Span::call_site())),
+            "AreaNotFinite",
+            "A finite field must give its Pascal case name followed by the not finite suffix"
         );
         assert_eq!(
-            variant_name(field_variant("r#type", Span::call_site())),
-            "Type",
+            variant_name(not_finite_variant("value", Span::call_site())),
+            "ValueNotFinite",
+            "The logical name of a newtype field must give the ValueNotFinite variant"
+        );
+        assert_eq!(
+            variant_name(not_finite_variant("r#type", Span::call_site())),
+            "TypeNotFinite",
             "A raw identifier field must give the variant of its plain name"
         );
         assert!(
-            field_variant("_1", Span::call_site()).is_err(),
+            not_finite_variant("_1", Span::call_site()).is_err(),
             "A name whose Pascal case spelling starts with a digit must be rejected"
         );
         assert!(
-            field_variant("__", Span::call_site()).is_err(),
+            not_finite_variant("__", Span::call_site()).is_err(),
             "A name with an empty Pascal case spelling must be rejected"
         );
     }

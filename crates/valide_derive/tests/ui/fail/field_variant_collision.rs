@@ -1,4 +1,4 @@
-//! Two fields whose names give the same field enum variant.
+//! Two finite fields whose names give the same variant of the generated error enum.
 
 #![allow(non_snake_case)]
 

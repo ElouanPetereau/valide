@@ -77,8 +77,9 @@ fn main() {
 - The error enum.
   Every range field gets its own variant, named after the field, such as `BusMassOutOfRange`.
   The variant carries the two evaluated bounds of the field and the value that the validation rejected.
-  The `Display` of the error names the field and the bounds only. The rejected value stays in the variant, reachable through a match or through `Debug`.
-  The shared `NotFinite` variant carries a generated field enum that names the failing field.
+  Every finite field also gets its own variant, named after the field, such as `AreaNotFinite`, which carries the value that the validation rejected.
+  The `Display` of a range variant names the field and the bounds only, and the `Display` of a finite variant names the field only.
+  The rejected value stays in the variant, reachable through a match or through `Debug`.
   One wrapper variant exists per final validation, per fallible nested field and per custom field.
 - The `TryFrom` of the draft and the `new` constructor, the two validated entry points.
   When using the [`serde`](https://docs.rs/serde/latest/serde/) crate, write `#[serde(try_from = "TypeDraft")]` on the type so the whole validation also guards deserialization.
@@ -151,8 +152,8 @@ and runs every final validation, because a final validation can read a skip fiel
 ### Newtypes
 
 A tuple struct with one field is supported. The single field is called `value`, so the getter is
-`value()`, the setter is `set_value()`, the validator is `validate_value()`, the field enum
-variant is `Value` and the range variant of the error enum is `ValueOutOfRange`.
+`value()`, the setter is `set_value()`, the validator is `validate_value()`, the range variant of
+the error enum is `ValueOutOfRange` and its finite variant is `ValueNotFinite`.
 
 ### Enums
 
@@ -161,7 +162,6 @@ A payload accepts `nested` and `skip` only.
 The enum declares no rule of its own, so every rule lives in the payload type and a public variant constructor bypasses nothing.
 
 The error enum holds one wrapper variant per nested variant, named after the variant.
-No field enum exists.
 An enum gets no getter, because a caller matches on the public variants.
 `Patch` generates no setter, because a patch of an enum replaces the whole variant, which `new` already validates.
 The draft enum takes the serde representation of serde itself, the external tagging.
@@ -179,9 +179,9 @@ Forward another representation with `#[draft_attr(serde(...))]`.
     Declare every bound yourself, the macro copies the generics and the where clause verbatim onto every generated item, and a missing bound fails with the ordinary compiler error.
   - A floating point literal inside a range cannot bind a generic parameter.
     Write the bounds in the parameter, such as `range(Number::ZERO..=Number::ONE)`.
-  - Only a range field type, a nested field type and an error type that the enum carries take a parameter into the error enum.
+  - Only a range field type, a finite field type, a nested field type and an error type that the enum carries take a parameter into the error enum.
     Once one parameter reaches it, every parameter must.
-    The derive rejects a proper subset with an error at each unused parameter. Remove that parameter, use it as the type of a range field, nest it in a validated field, or name it in a final validation error.
-- Every range field type must implement `Clone`, `PartialEq` and `Debug`, which the error enum derives.
-  The variant of the field holds the two bounds and a clone of the rejected value.
+    The derive rejects a proper subset with an error at each unused parameter. Remove that parameter, use it as the type of a range or finite field, nest it in a validated field, or name it in a final validation error.
+- Every range field type and every finite field type must implement `Clone`, `PartialEq` and `Debug`, which the error enum derives.
+  The variant of a range field holds the two bounds and a clone of the rejected value, and the variant of a finite field holds a clone of the rejected value.
 - A parameter inside the error enum needs `'static`, `Debug` and `Display` bounds, and `Patch` needs `Clone`.
