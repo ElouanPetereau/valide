@@ -1,7 +1,7 @@
 //! Generation of the field enum of a validated type and of its [`Display`](core::fmt::Display) implementation.
 //!
-//! The enum has one variant per range or finite validated field.
-//! The shared error variants carry one of its variants to name the field that failed.
+//! The enum has one variant per finite validated field.
+//! The shared finite error variant carries one of its variants to name the field that failed.
 //! A type without such a field gets no enum at all, which keeps every generated state reachable.
 
 use proc_macro2::TokenStream;

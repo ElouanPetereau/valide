@@ -4,6 +4,8 @@
 //! The range of its field reads the two bounds from the parameter itself,
 //! because a floating point literal would ask the parameter for a comparison between two precisions.
 
+use core::{fmt::Debug, ops::Bound};
+
 use valide::{Patch as _, Validate as _};
 
 /// Bounds of the unit interval and the finite check at the precision of the implementor.
@@ -44,7 +46,7 @@ struct Fraction<Number: Bounded01 = f64>(
     Number,
 )
 where
-    Number: Clone + PartialOrd;
+    Number: Clone + PartialOrd + Debug;
 
 /// Reading whose measurement carries the precision of the parameter.
 #[derive(Clone, valide_derive::Validate, valide_derive::Patch)]
@@ -79,17 +81,19 @@ fn main() {
 
     assert_eq!(
         Fraction::<f32>::new(FractionDraft(1.5)).err(),
-        Some(FractionValidationError::OutOfRange {
-            field: FractionField::Value,
-            range: "[Number::ZERO, Number::ONE]",
+        Some(FractionValidationError::ValueOutOfRange {
+            lower: Bound::Included(0.0_f32),
+            upper: Bound::Included(1.0_f32),
+            value: 1.5,
         }),
         "A value above the range must be rejected at the single precision"
     );
     assert_eq!(
         Fraction::<f64>::new(FractionDraft(-0.5)).err(),
-        Some(FractionValidationError::OutOfRange {
-            field: FractionField::Value,
-            range: "[Number::ZERO, Number::ONE]",
+        Some(FractionValidationError::ValueOutOfRange {
+            lower: Bound::Included(0.0_f64),
+            upper: Bound::Included(1.0_f64),
+            value: -0.5,
         }),
         "A value below the range must be rejected at the double precision"
     );

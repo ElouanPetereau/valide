@@ -1,5 +1,7 @@
 //! An integer range, whose bounds carry no floating point literal.
 
+use core::ops::Bound;
+
 /// A count bounded to [0, 10].
 #[derive(valide_derive::Validate)]
 struct Count {
@@ -18,10 +20,11 @@ fn main() {
 
     assert_eq!(
         Count::new(CountDraft { value: 11 }).err(),
-        Some(CountValidationError::OutOfRange {
-            field: CountField::Value,
-            range: "[0, 10]",
+        Some(CountValidationError::ValueOutOfRange {
+            lower: Bound::Included(0),
+            upper: Bound::Included(10),
+            value: 11,
         }),
-        "A count above the range must be rejected with the rendered integer range"
+        "A count above the range must be rejected with the two integer bounds"
     );
 }

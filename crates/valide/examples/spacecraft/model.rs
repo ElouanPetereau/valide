@@ -1,7 +1,5 @@
 //! Validated spacecraft model.
 
-use core::ops::Bound;
-
 use nalgebra::{ComplexField, Matrix3, RealField};
 use num_traits::Float;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -93,7 +91,7 @@ impl<Type: RealField + Float> From<InertiaMatrix<Type>> for InertiaMatrixSeriali
 // written once so the generated code never has to know them
 impl<Type: RealField + Float> Validate for InertiaMatrix<Type> {
     type Draft = InertiaMatrixSerializableDraft<Type>;
-    type Error = InertiaMatrixSerializableValidationError;
+    type Error = InertiaMatrixSerializableValidationError<Type>;
 
     fn validate(draft: &Self::Draft) -> Result<(), Self::Error> {
         draft.validate()

@@ -15,6 +15,10 @@ pub(crate) const DRAFT_SUFFIX: &str = "Draft";
 pub(crate) const FIELD_ENUM_SUFFIX: &str = "Field";
 /// Suffix of the generated validation error enum and of every one of its wrapper variants.
 pub(crate) const VALIDATION_ERROR_SUFFIX: &str = "ValidationError";
+/// Suffix of the error enum variant of a range field.
+const OUT_OF_RANGE_SUFFIX: &str = "OutOfRange";
+/// Name of the error enum variant that every finite field shares.
+const NOT_FINITE_VARIANT: &str = "NotFinite";
 /// Prefix that the generator removes from a final validation name to build its wrapper variant.
 const VALIDATION_FUNCTION_PREFIX: &str = "validate_";
 /// Prefix of a raw identifier, which no derived name carries.
@@ -51,6 +55,17 @@ pub(crate) fn suffixed_ident(base: &Ident, suffix: &str) -> Ident {
 /// Return an error when the name builds no identifier.
 pub(crate) fn field_variant(logical_name: &str, span: Span) -> Result<Ident> {
     pascal_case_ident(logical_name, "", span)
+}
+
+/// Build the error enum variant that every finite field shares, with the span of the macro.
+pub(crate) fn not_finite_variant() -> Ident {
+    Ident::new(NOT_FINITE_VARIANT, Span::call_site())
+}
+
+/// Build the error enum variant of the range field `logical_name`, with the span `span`.
+/// Return an error when the name builds no identifier.
+pub(crate) fn range_variant(logical_name: &str, span: Span) -> Result<Ident> {
+    pascal_case_ident(logical_name, OUT_OF_RANGE_SUFFIX, span)
 }
 
 /// Build the wrapper variant of the nested field `logical_name`, with the span `span`.
@@ -111,7 +126,7 @@ mod tests {
 
     use crate::naming::{
         DRAFT_SUFFIX, field_variant, final_validation_wrapper_variant, first_collision,
-        nested_wrapper_variant, suffixed_ident, to_pascal_case,
+        nested_wrapper_variant, range_variant, suffixed_ident, to_pascal_case,
     };
 
     /// Build an identifier from `name`, with the call site span.
@@ -185,6 +200,29 @@ mod tests {
         );
         assert!(
             field_variant("__", Span::call_site()).is_err(),
+            "A name with an empty Pascal case spelling must be rejected"
+        );
+    }
+
+    #[test]
+    fn range_variant_appends_the_out_of_range_suffix() {
+        assert_eq!(
+            variant_name(range_variant("bus_mass", Span::call_site())),
+            "BusMassOutOfRange",
+            "A range field must give its Pascal case name followed by the out of range suffix"
+        );
+        assert_eq!(
+            variant_name(range_variant("value", Span::call_site())),
+            "ValueOutOfRange",
+            "The logical name of a newtype field must give the ValueOutOfRange variant"
+        );
+        assert_eq!(
+            variant_name(range_variant("r#type", Span::call_site())),
+            "TypeOutOfRange",
+            "A raw identifier field must give the variant of its plain name"
+        );
+        assert!(
+            range_variant("__", Span::call_site()).is_err(),
             "A name with an empty Pascal case spelling must be rejected"
         );
     }

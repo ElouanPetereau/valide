@@ -75,7 +75,10 @@ fn main() {
 - The aggregated function `validate`, which runs the field validators in declaration order, stops at the first error, then runs every final validation.
   A final validation holds a rule that spans several fields, so it always reads a draft whose fields are individually valid.
 - The error enum.
-  The shared `OutOfRange` and `NotFinite` variants carry a generated field enum that names the failing field.
+  Every range field gets its own variant, named after the field, such as `BusMassOutOfRange`.
+  The variant carries the two evaluated bounds of the field and the value that the validation rejected.
+  The `Display` of the error names the field and the bounds only. The rejected value stays in the variant, reachable through a match or through `Debug`.
+  The shared `NotFinite` variant carries a generated field enum that names the failing field.
   One wrapper variant exists per final validation, per fallible nested field and per custom field.
 - The `TryFrom` of the draft and the `new` constructor, the two validated entry points.
   When using the [`serde`](https://docs.rs/serde/latest/serde/) crate, write `#[serde(try_from = "TypeDraft")]` on the type so the whole validation also guards deserialization.
@@ -100,9 +103,12 @@ a new field never escapes the validation by accident.
 Every field must also be private. A public field is a compilation error, because the generated getters and setters are the only path to a validated value.
 
 - `#[validate(range(0.0..=1.0))]` accepts one range expression. The value must be inside it.
+  The rejection carries the two bounds as the check evaluated them and the value that it rejected.
+  The message names the field and the bounds, so a fraction of 1.5 reads `value must be within the range [0.0, 1.0]`.
 - `#[validate(range(Bound::Excluded(0.0), Bound::Excluded(f64::INFINITY)))]` accepts two bounds.
   Use this form for a range that the range syntax cannot spell, such as an excluded lower bound.
-  The generated check resolves `Bound` in the module of the validated type, which must import it.
+  The generated check names `core::ops::Bound` with its own absolute path, so the module of the
+  validated type needs no import of it.
 - `#[validate(finite)]` accepts a floating point value that is neither infinite nor a not a
   number value. The marker is meant for `f32` and `f64`. The generated check calls the
   `is_finite` method of the field type, which a trait bound can provide for a generic field.
@@ -145,8 +151,8 @@ and runs every final validation, because a final validation can read a skip fiel
 ### Newtypes
 
 A tuple struct with one field is supported. The single field is called `value`, so the getter is
-`value()`, the setter is `set_value()`, the validator is `validate_value()` and the field enum
-variant is `Value`.
+`value()`, the setter is `set_value()`, the validator is `validate_value()`, the field enum
+variant is `Value` and the range variant of the error enum is `ValueOutOfRange`.
 
 ### Enums
 
@@ -173,7 +179,9 @@ Forward another representation with `#[draft_attr(serde(...))]`.
     Declare every bound yourself, the macro copies the generics and the where clause verbatim onto every generated item, and a missing bound fails with the ordinary compiler error.
   - A floating point literal inside a range cannot bind a generic parameter.
     Write the bounds in the parameter, such as `range(Number::ZERO..=Number::ONE)`.
-  - Only a nested field type and a final validation error type carry a parameter into the error enum.
+  - Only a range field type, a nested field type and an error type that the enum carries take a parameter into the error enum.
     Once one parameter reaches it, every parameter must.
-    The derive rejects a proper subset with an error at each unused parameter. Remove that parameter, nest it in a validated field, or name it in a final validation error.
+    The derive rejects a proper subset with an error at each unused parameter. Remove that parameter, use it as the type of a range field, nest it in a validated field, or name it in a final validation error.
+- Every range field type must implement `Clone`, `PartialEq` and `Debug`, which the error enum derives.
+  The variant of the field holds the two bounds and a clone of the rejected value.
 - A parameter inside the error enum needs `'static`, `Debug` and `Display` bounds, and `Patch` needs `Clone`.

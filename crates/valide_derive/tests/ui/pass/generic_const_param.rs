@@ -1,4 +1,9 @@
 //! A validated type with a const parameter, which its range and its skipped field both read.
+//!
+//! The upper bound of the range is the const parameter itself, so the rejection of a window
+//! carries the length of that window as the evaluated bound.
+
+use core::ops::Bound;
 
 /// Window of a fixed sample count.
 #[derive(valide_derive::Validate)]
@@ -34,9 +39,10 @@ fn main() {
             samples: [1.0, 2.0],
         })
         .err(),
-        Some(WindowValidationError::OutOfRange {
-            field: WindowField::Index,
-            range: "[0, LENGTH]",
+        Some(WindowValidationError::IndexOutOfRange {
+            lower: Bound::Included(0),
+            upper: Bound::Included(2),
+            value: 3,
         }),
         "An index above the const parameter must be rejected"
     );
@@ -52,12 +58,17 @@ fn main() {
         "A second const argument must give the same validation"
     );
 
-    assert!(
+    assert_eq!(
         Window::<4>::new(WindowDraft {
             index: 5,
             samples: [1.0; 4],
         })
-        .is_err(),
-        "An index above a longer const parameter must be rejected"
+        .err(),
+        Some(WindowValidationError::IndexOutOfRange {
+            lower: Bound::Included(0),
+            upper: Bound::Included(4),
+            value: 5,
+        }),
+        "The rejection of a longer window must carry the length of that window"
     );
 }

@@ -1,6 +1,6 @@
 //! A named struct whose field carries a custom validation function.
 
-use core::error::Error as _;
+use core::{error::Error as _, ops::Bound};
 
 use valide::{Patch as _, Validate as _};
 
@@ -96,9 +96,10 @@ fn main() {
     both_invalid.designation = Designation(String::new());
     assert_eq!(
         Reading::new(both_invalid).err(),
-        Some(ReadingValidationError::OutOfRange {
-            field: ReadingField::Fraction,
-            range: "[0.0, 1.0]",
+        Some(ReadingValidationError::FractionOutOfRange {
+            lower: Bound::Included(0.0),
+            upper: Bound::Included(1.0),
+            value: 2.0,
         }),
         "The fail fast policy must stop before the custom check of a later field"
     );

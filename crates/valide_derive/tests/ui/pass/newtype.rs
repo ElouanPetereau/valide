@@ -1,5 +1,7 @@
 //! A newtype with a range marker and a deserialization validation.
 
+use core::ops::Bound;
+
 use serde::{Deserialize, Serialize};
 use valide::{Patch as _, Validate as _};
 
@@ -21,9 +23,10 @@ fn main() {
 
     assert_eq!(
         Fraction::new(FractionDraft(1.5)).err(),
-        Some(FractionValidationError::OutOfRange {
-            field: FractionField::Value,
-            range: "[0.0, 1.0]",
+        Some(FractionValidationError::ValueOutOfRange {
+            lower: Bound::Included(0.0),
+            upper: Bound::Included(1.0),
+            value: 1.5,
         }),
         "A value above the range must be rejected"
     );

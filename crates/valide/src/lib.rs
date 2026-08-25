@@ -16,6 +16,9 @@ extern crate self as valide;
 #[cfg(feature = "derive")]
 pub use valide_derive::{Patch, Validate};
 
+#[doc(hidden)]
+pub mod error_display;
+
 /// A type that can only be built from a validated draft.
 pub trait Validate: Sized {
     /// Unvalidated draft mirror of the type.
@@ -50,6 +53,8 @@ pub trait Patch: Validate {
 #[cfg(test)]
 #[path = "../examples/spacecraft"] // The domain model of the tests is the model of the `spacecraft` example.
 mod tests {
+    use core::ops::Bound;
+
     use nalgebra::RealField;
     use num_traits::Float;
 
@@ -85,24 +90,45 @@ mod tests {
         spacecraft_draft_with_masses(1000.0, 600.0, 300.0);
 
     /// The three diagonal field cases of an inertia draft.
-    const DIAGONAL_INERTIA_FIELD_CASES: [InertiaFieldCase; 3] = [
+    const DIAGONAL_INERTIA_FIELD_CASES: [DiagonalInertiaFieldCase; 3] = [
         (
             "xx",
             |draft, value| draft.xx = value,
             InertiaMatrixSerializableDraft::validate_xx,
-            InertiaMatrixSerializableField::Xx,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::XxOutOfRange {
+                    lower,
+                    upper,
+                    value,
+                } => Some((lower, upper, value)),
+                _ => None,
+            },
         ),
         (
             "yy",
             |draft, value| draft.yy = value,
             InertiaMatrixSerializableDraft::validate_yy,
-            InertiaMatrixSerializableField::Yy,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::YyOutOfRange {
+                    lower,
+                    upper,
+                    value,
+                } => Some((lower, upper, value)),
+                _ => None,
+            },
         ),
         (
             "zz",
             |draft, value| draft.zz = value,
             InertiaMatrixSerializableDraft::validate_zz,
-            InertiaMatrixSerializableField::Zz,
+            |error| match *error {
+                InertiaMatrixSerializableValidationError::ZzOutOfRange {
+                    lower,
+                    upper,
+                    value,
+                } => Some((lower, upper, value)),
+                _ => None,
+            },
         ),
     ];
 
@@ -153,9 +179,29 @@ mod tests {
         fn(&mut InertiaMatrixSerializableDraft<f64>, f64),
         fn(
             &InertiaMatrixSerializableDraft<f64>,
-        ) -> Result<(), InertiaMatrixSerializableValidationError>,
+        ) -> Result<(), InertiaMatrixSerializableValidationError<f64>>,
         InertiaMatrixSerializableField,
     );
+
+    /// Name, setter, validator and range payload reader of one diagonal inertia draft field.
+    /// A diagonal field carries a range rule, whose error variant belongs to the field itself,
+    /// so the case reads the payload of that variant instead of naming a field enum variant.
+    type DiagonalInertiaFieldCase = (
+        &'static str,
+        fn(&mut InertiaMatrixSerializableDraft<f64>, f64),
+        fn(
+            &InertiaMatrixSerializableDraft<f64>,
+        ) -> Result<(), InertiaMatrixSerializableValidationError<f64>>,
+        DiagonalRangePayloadReader,
+    );
+
+    /// Reader of the range payload that the error variant of one diagonal inertia field carries.
+    /// The reader returns nothing for every other variant of the error enum.
+    type DiagonalRangePayloadReader =
+        fn(&InertiaMatrixSerializableValidationError<f64>) -> Option<RangePayload>;
+
+    /// The two bounds of a validated range and the value that the validation rejected.
+    type RangePayload = (Bound<f64>, Bound<f64>, f64);
 
     /// Build an inertia draft with the given `xx`, `yy` and `zz` diagonal and zero off-diagonals.
     const fn diagonal_inertia_draft(
@@ -262,9 +308,9 @@ mod tests {
         set_field: fn(&mut InertiaMatrixSerializableDraft<f64>, f64),
         validate_field: fn(
             &InertiaMatrixSerializableDraft<f64>,
-        ) -> Result<(), InertiaMatrixSerializableValidationError>,
+        ) -> Result<(), InertiaMatrixSerializableValidationError<f64>>,
         new_value: f64,
-    ) -> Result<(), InertiaMatrixSerializableValidationError> {
+    ) -> Result<(), InertiaMatrixSerializableValidationError<f64>> {
         let mut draft = VALID_INERTIA_DRAFT;
         set_field(&mut draft, new_value);
         validate_field(&draft)
@@ -274,9 +320,9 @@ mod tests {
     mod field_validation {
         /// Bounds of the shadow fraction value.
         mod shadow_fraction {
-            use crate::tests::model::{
-                ShadowFractionDraft, ShadowFractionField, ShadowFractionValidationError,
-            };
+            use core::ops::Bound;
+
+            use crate::tests::model::{ShadowFractionDraft, ShadowFractionValidationError};
 
             #[test]
             fn accepts_lower_bound() {
@@ -318,9 +364,10 @@ mod tests {
             fn rejects_below_lower_bound() {
                 assert_eq!(
                     ShadowFractionDraft(-0.1).validate_value(),
-                    Err(ShadowFractionValidationError::OutOfRange {
-                        field: ShadowFractionField::Value,
-                        range: "[0.0, 1.0]",
+                    Err(ShadowFractionValidationError::ValueOutOfRange {
+                        lower: Bound::Included(0.0),
+                        upper: Bound::Included(1.0),
+                        value: -0.1,
                     }),
                     "A value below the lower bound must be rejected"
                 );
@@ -331,9 +378,10 @@ mod tests {
                 for rejected_value in [1.000_001, 1.0 + f64::EPSILON] {
                     assert_eq!(
                         ShadowFractionDraft(rejected_value).validate_value(),
-                        Err(ShadowFractionValidationError::OutOfRange {
-                            field: ShadowFractionField::Value,
-                            range: "[0.0, 1.0]",
+                        Err(ShadowFractionValidationError::ValueOutOfRange {
+                            lower: Bound::Included(0.0),
+                            upper: Bound::Included(1.0),
+                            value: rejected_value,
                         }),
                         "The value {rejected_value} above the upper bound must be rejected"
                     );
@@ -342,13 +390,28 @@ mod tests {
 
             #[test]
             fn rejects_nan() {
+                // A not a number value equals no value at all, so the rejection cannot be compared
+                let ShadowFractionValidationError::ValueOutOfRange {
+                    lower,
+                    upper,
+                    value,
+                } = ShadowFractionDraft(f64::NAN)
+                    .validate_value()
+                    .expect_err("A not a number value must be rejected");
+
                 assert_eq!(
-                    ShadowFractionDraft(f64::NAN).validate_value(),
-                    Err(ShadowFractionValidationError::OutOfRange {
-                        field: ShadowFractionField::Value,
-                        range: "[0.0, 1.0]",
-                    }),
-                    "A not a number value must be rejected"
+                    lower,
+                    Bound::Included(0.0),
+                    "The rejection must carry the included lower bound of the fraction"
+                );
+                assert_eq!(
+                    upper,
+                    Bound::Included(1.0),
+                    "The rejection must carry the included upper bound of the fraction"
+                );
+                assert!(
+                    value.is_nan(),
+                    "The rejection must carry the not a number value that it rejected"
                 );
             }
 
@@ -356,9 +419,10 @@ mod tests {
             fn rejects_positive_infinity() {
                 assert_eq!(
                     ShadowFractionDraft(f64::INFINITY).validate_value(),
-                    Err(ShadowFractionValidationError::OutOfRange {
-                        field: ShadowFractionField::Value,
-                        range: "[0.0, 1.0]",
+                    Err(ShadowFractionValidationError::ValueOutOfRange {
+                        lower: Bound::Included(0.0),
+                        upper: Bound::Included(1.0),
+                        value: f64::INFINITY,
                     }),
                     "The positive infinity must be rejected"
                 );
@@ -367,9 +431,11 @@ mod tests {
 
         /// Bounds of the gravitational parameter of a celestial body.
         mod celestial_body {
+            use core::ops::Bound;
+
             use crate::tests::{
                 VALID_CELESTIAL_BODY_DRAFT,
-                model::{CelestialBodyDraft, CelestialBodyField, CelestialBodyValidationError},
+                model::{CelestialBodyDraft, CelestialBodyValidationError},
             };
 
             #[test]
@@ -394,43 +460,103 @@ mod tests {
             }
 
             #[test]
-            fn rejects_zero_negative_infinity_and_nan() {
-                for rejected_value in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            fn rejects_zero_negative_and_infinity() {
+                for rejected_value in [0.0, -1.0, f64::INFINITY] {
                     assert_eq!(
                         CelestialBodyDraft {
                             gravitational_parameter: rejected_value
                         }
                         .validate_gravitational_parameter(),
-                        Err(CelestialBodyValidationError::OutOfRange {
-                            field: CelestialBodyField::GravitationalParameter,
-                            range: "]0.0, +inf[",
-                        }),
+                        Err(
+                            CelestialBodyValidationError::GravitationalParameterOutOfRange {
+                                lower: Bound::Excluded(0.0),
+                                upper: Bound::Excluded(f64::INFINITY),
+                                value: rejected_value,
+                            }
+                        ),
                         "The gravitational parameter {rejected_value} must be rejected"
                     );
                 }
+            }
+
+            #[test]
+            fn rejects_nan() {
+                // A not a number value equals no value at all, so the rejection cannot be compared
+                let CelestialBodyValidationError::GravitationalParameterOutOfRange {
+                    lower,
+                    upper,
+                    value,
+                } = CelestialBodyDraft {
+                    gravitational_parameter: f64::NAN,
+                }
+                .validate_gravitational_parameter()
+                .expect_err("A not a number gravitational parameter must be rejected");
+
+                assert_eq!(
+                    lower,
+                    Bound::Excluded(0.0),
+                    "The rejection must carry the excluded lower bound of the parameter"
+                );
+                assert_eq!(
+                    upper,
+                    Bound::Excluded(f64::INFINITY),
+                    "The rejection must carry the excluded upper bound of the parameter"
+                );
+                assert!(
+                    value.is_nan(),
+                    "The rejection must carry the not a number value that it rejected"
+                );
             }
         }
 
         /// Bounds of the three diagonal inertia entries, valid over the open range ]0, +inf[.
         mod inertia_matrix_diagonal {
+            use core::ops::Bound;
+
             use crate::tests::{
-                DIAGONAL_INERTIA_FIELD_CASES, diagonal_inertia_draft_with_precision,
-                model::{InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError},
-                validate_inertia_field,
+                DIAGONAL_INERTIA_FIELD_CASES, DiagonalRangePayloadReader, assert_float_eq,
+                diagonal_inertia_draft_with_precision,
+                model::InertiaMatrixSerializableValidationError, validate_inertia_field,
             };
+
+            /// Return the value that the range rejection `error` of the diagonal field `field_name`
+            /// carries, read through `range_payload`.
+            /// The two bounds of the rejection must be the open ends of the diagonal rule.
+            fn rejected_diagonal_value(
+                error: &InertiaMatrixSerializableValidationError<f64>,
+                range_payload: DiagonalRangePayloadReader,
+                field_name: &str,
+            ) -> f64 {
+                let Some((lower, upper, value)) = range_payload(error) else {
+                    panic!("The {field_name} rejection must be the range variant of the field");
+                };
+
+                assert_eq!(
+                    lower,
+                    Bound::Excluded(0.0),
+                    "The {field_name} rejection must carry the excluded lower bound zero"
+                );
+                assert_eq!(
+                    upper,
+                    Bound::Excluded(f64::INFINITY),
+                    "The {field_name} rejection must carry the excluded upper bound infinity"
+                );
+
+                value
+            }
 
             #[test]
             fn rejects_zero() {
-                for (field_name, set_field, validate_field, expected_field) in
+                for (field_name, set_field, validate_field, range_payload) in
                     DIAGONAL_INERTIA_FIELD_CASES
                 {
-                    assert_eq!(
-                        validate_inertia_field(set_field, validate_field, 0.0),
-                        Err(InertiaMatrixSerializableValidationError::OutOfRange {
-                            field: expected_field,
-                            range: "]Type::zero(), Type::infinity()[",
-                        }),
-                        "The excluded lower bound 0.0 must be rejected for the {field_name} field"
+                    let error = validate_inertia_field(set_field, validate_field, 0.0)
+                        .expect_err("The excluded lower bound 0.0 must be rejected");
+
+                    assert_float_eq(
+                        rejected_diagonal_value(&error, range_payload, field_name),
+                        0.0,
+                        &format!("rejected {field_name} value"),
                     );
                 }
             }
@@ -459,32 +585,32 @@ mod tests {
 
             #[test]
             fn rejects_negative() {
-                for (field_name, set_field, validate_field, expected_field) in
+                for (field_name, set_field, validate_field, range_payload) in
                     DIAGONAL_INERTIA_FIELD_CASES
                 {
-                    assert_eq!(
-                        validate_inertia_field(set_field, validate_field, -1.0),
-                        Err(InertiaMatrixSerializableValidationError::OutOfRange {
-                            field: expected_field,
-                            range: "]Type::zero(), Type::infinity()[",
-                        }),
-                        "A negative value must be rejected for the {field_name} field"
+                    let error = validate_inertia_field(set_field, validate_field, -1.0)
+                        .expect_err("A negative value must be rejected");
+
+                    assert_float_eq(
+                        rejected_diagonal_value(&error, range_payload, field_name),
+                        -1.0,
+                        &format!("rejected {field_name} value"),
                     );
                 }
             }
 
             #[test]
             fn rejects_positive_infinity_at_f64_precision() {
-                for (field_name, set_field, validate_field, expected_field) in
+                for (field_name, set_field, validate_field, range_payload) in
                     DIAGONAL_INERTIA_FIELD_CASES
                 {
-                    assert_eq!(
-                        validate_inertia_field(set_field, validate_field, f64::INFINITY),
-                        Err(InertiaMatrixSerializableValidationError::OutOfRange {
-                            field: expected_field,
-                            range: "]Type::zero(), Type::infinity()[",
-                        }),
-                        "The excluded positive infinity must be rejected for the {field_name} field"
+                    let error = validate_inertia_field(set_field, validate_field, f64::INFINITY)
+                        .expect_err("The excluded positive infinity must be rejected");
+
+                    assert_float_eq(
+                        rejected_diagonal_value(&error, range_payload, field_name),
+                        f64::INFINITY,
+                        &format!("rejected {field_name} value"),
                     );
                 }
             }
@@ -495,9 +621,10 @@ mod tests {
 
                 assert_eq!(
                     draft.validate_yy(),
-                    Err(InertiaMatrixSerializableValidationError::OutOfRange {
-                        field: InertiaMatrixSerializableField::Yy,
-                        range: "]Type::zero(), Type::infinity()[",
+                    Err(InertiaMatrixSerializableValidationError::YyOutOfRange {
+                        lower: Bound::Excluded(0.0_f32),
+                        upper: Bound::Excluded(f32::INFINITY),
+                        value: f32::INFINITY,
                     }),
                     "The excluded positive infinity must be rejected at the single precision"
                 );
@@ -505,16 +632,17 @@ mod tests {
 
             #[test]
             fn rejects_nan_at_f64_precision() {
-                for (field_name, set_field, validate_field, expected_field) in
+                for (field_name, set_field, validate_field, range_payload) in
                     DIAGONAL_INERTIA_FIELD_CASES
                 {
-                    assert_eq!(
-                        validate_inertia_field(set_field, validate_field, f64::NAN),
-                        Err(InertiaMatrixSerializableValidationError::OutOfRange {
-                            field: expected_field,
-                            range: "]Type::zero(), Type::infinity()[",
-                        }),
-                        "A not a number value must be rejected for the {field_name} field"
+                    // A not a number value equals no value at all,
+                    // so the rejection cannot be compared
+                    let error = validate_inertia_field(set_field, validate_field, f64::NAN)
+                        .expect_err("A not a number value must be rejected");
+
+                    assert!(
+                        rejected_diagonal_value(&error, range_payload, field_name).is_nan(),
+                        "The {field_name} rejection must carry the not a number value that it rejected"
                     );
                 }
             }
@@ -522,14 +650,32 @@ mod tests {
             #[test]
             fn rejects_nan_at_f32_precision() {
                 let draft = diagonal_inertia_draft_with_precision(f32::NAN, 3.0_f32, 4.0_f32);
+                // A not a number value equals no value at all, so the rejection cannot be compared
+                let error = draft
+                    .validate_xx()
+                    .expect_err("A not a number diagonal entry must be rejected");
+                let InertiaMatrixSerializableValidationError::XxOutOfRange {
+                    lower,
+                    upper,
+                    value,
+                } = error
+                else {
+                    panic!("The rejection must be the range variant of the xx field");
+                };
 
                 assert_eq!(
-                    draft.validate_xx(),
-                    Err(InertiaMatrixSerializableValidationError::OutOfRange {
-                        field: InertiaMatrixSerializableField::Xx,
-                        range: "]Type::zero(), Type::infinity()[",
-                    }),
-                    "A not a number diagonal entry must be rejected at the single precision"
+                    lower,
+                    Bound::Excluded(0.0_f32),
+                    "The rejection must carry the excluded lower bound zero"
+                );
+                assert_eq!(
+                    upper,
+                    Bound::Excluded(f32::INFINITY),
+                    "The rejection must carry the excluded upper bound infinity"
+                );
+                assert!(
+                    value.is_nan(),
+                    "The rejection must carry the not a number value that it rejected"
                 );
             }
         }
@@ -618,12 +764,13 @@ mod tests {
 
         /// Bounds of the spacecraft masses and wrapper variants of the nested errors.
         mod spacecraft_masses {
+            use core::ops::Bound;
+
             use crate::tests::{
                 VALID_SPACECRAFT_DRAFT, diagonal_inertia_draft,
                 model::{
-                    InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-                    ShadowFractionDraft, ShadowFractionField, ShadowFractionValidationError,
-                    SpacecraftDraft, SpacecraftField, SpacecraftValidationError,
+                    InertiaMatrixSerializableValidationError, ShadowFractionDraft,
+                    ShadowFractionValidationError, SpacecraftDraft, SpacecraftValidationError,
                 },
                 spacecraft_draft_with_masses,
             };
@@ -641,9 +788,10 @@ mod tests {
             fn mass_rejects_negative() {
                 assert_eq!(
                     spacecraft_draft_with_masses(-1.0, 600.0, 300.0).validate_mass(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::Mass,
-                        range: "[0.0, +inf[",
+                    Err(SpacecraftValidationError::MassOutOfRange {
+                        lower: Bound::Included(0.0),
+                        upper: Bound::Excluded(f64::INFINITY),
+                        value: -1.0,
                     }),
                     "A negative total mass must be rejected"
                 );
@@ -653,9 +801,10 @@ mod tests {
             fn mass_rejects_positive_infinity() {
                 assert_eq!(
                     spacecraft_draft_with_masses(f64::INFINITY, 600.0, 300.0).validate_mass(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::Mass,
-                        range: "[0.0, +inf[",
+                    Err(SpacecraftValidationError::MassOutOfRange {
+                        lower: Bound::Included(0.0),
+                        upper: Bound::Excluded(f64::INFINITY),
+                        value: f64::INFINITY,
                     }),
                     "The excluded positive infinity must be rejected as a total mass"
                 );
@@ -663,13 +812,32 @@ mod tests {
 
             #[test]
             fn mass_rejects_nan() {
+                // A not a number value equals no value at all, so the rejection cannot be compared
+                let error = spacecraft_draft_with_masses(f64::NAN, 600.0, 300.0)
+                    .validate_mass()
+                    .expect_err("A not a number total mass must be rejected");
+                let SpacecraftValidationError::MassOutOfRange {
+                    lower,
+                    upper,
+                    value,
+                } = error
+                else {
+                    panic!("The rejection must be the range variant of the mass field");
+                };
+
                 assert_eq!(
-                    spacecraft_draft_with_masses(f64::NAN, 600.0, 300.0).validate_mass(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::Mass,
-                        range: "[0.0, +inf[",
-                    }),
-                    "A not a number total mass must be rejected"
+                    lower,
+                    Bound::Included(0.0),
+                    "The rejection must carry the included lower bound of the total mass"
+                );
+                assert_eq!(
+                    upper,
+                    Bound::Excluded(f64::INFINITY),
+                    "The rejection must carry the excluded upper bound of the total mass"
+                );
+                assert!(
+                    value.is_nan(),
+                    "The rejection must carry the not a number value that it rejected"
                 );
             }
 
@@ -686,11 +854,25 @@ mod tests {
             fn bus_mass_rejects_above_upper_bound() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, 10_000.1, 300.0).validate_bus_mass(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::BusMass,
-                        range: "]0.0, 10_000.0]",
+                    Err(SpacecraftValidationError::BusMassOutOfRange {
+                        lower: Bound::Excluded(0.0),
+                        upper: Bound::Included(10_000.0),
+                        value: 10_000.1,
                     }),
                     "A bus mass above the upper bound must be rejected"
+                );
+            }
+
+            #[test]
+            fn bus_mass_rejection_displays_its_bounds_and_its_value() {
+                let error = spacecraft_draft_with_masses(1000.0, 10_000.1, 300.0)
+                    .validate_bus_mass()
+                    .expect_err("A bus mass above the upper bound must be rejected");
+
+                assert_eq!(
+                    error.to_string(),
+                    "bus_mass must be within the range ]0.0, 10000.0]",
+                    "The rejection must name the field, the two evaluated bounds and the value"
                 );
             }
 
@@ -698,9 +880,10 @@ mod tests {
             fn bus_mass_rejects_zero() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, 0.0, 300.0).validate_bus_mass(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::BusMass,
-                        range: "]0.0, 10_000.0]",
+                    Err(SpacecraftValidationError::BusMassOutOfRange {
+                        lower: Bound::Excluded(0.0),
+                        upper: Bound::Included(10_000.0),
+                        value: 0.0,
                     }),
                     "The excluded lower bound of the bus mass must be rejected"
                 );
@@ -710,9 +893,10 @@ mod tests {
             fn bus_mass_rejects_negative() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, -1.0, 300.0).validate_bus_mass(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::BusMass,
-                        range: "]0.0, 10_000.0]",
+                    Err(SpacecraftValidationError::BusMassOutOfRange {
+                        lower: Bound::Excluded(0.0),
+                        upper: Bound::Included(10_000.0),
+                        value: -1.0,
                     }),
                     "A negative bus mass must be rejected"
                 );
@@ -731,9 +915,10 @@ mod tests {
             fn sail_mass_rejects_above_upper_bound() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, 600.0, 10_000.1).validate_sail_mass(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::SailMass,
-                        range: "[0.0, 10_000.0]",
+                    Err(SpacecraftValidationError::SailMassOutOfRange {
+                        lower: Bound::Included(0.0),
+                        upper: Bound::Included(10_000.0),
+                        value: 10_000.1,
                     }),
                     "A sail mass above the upper bound must be rejected"
                 );
@@ -743,9 +928,10 @@ mod tests {
             fn sail_mass_rejects_negative() {
                 assert_eq!(
                     spacecraft_draft_with_masses(1000.0, 600.0, -1.0).validate_sail_mass(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::SailMass,
-                        range: "[0.0, 10_000.0]",
+                    Err(SpacecraftValidationError::SailMassOutOfRange {
+                        lower: Bound::Included(0.0),
+                        upper: Bound::Included(10_000.0),
+                        value: -1.0,
                     }),
                     "A negative sail mass must be rejected"
                 );
@@ -761,9 +947,10 @@ mod tests {
                 assert_eq!(
                     draft.validate_inertia_matrix(),
                     Err(SpacecraftValidationError::InertiaMatrixValidationError(
-                        InertiaMatrixSerializableValidationError::OutOfRange {
-                            field: InertiaMatrixSerializableField::Xx,
-                            range: "]Type::zero(), Type::infinity()[",
+                        InertiaMatrixSerializableValidationError::XxOutOfRange {
+                            lower: Bound::Excluded(0.0),
+                            upper: Bound::Excluded(f64::INFINITY),
+                            value: 0.0,
                         }
                     )),
                     "The nested inertia matrix error must be wrapped by the spacecraft error"
@@ -780,9 +967,10 @@ mod tests {
                 assert_eq!(
                     draft.validate_sun_shadow_fraction(),
                     Err(SpacecraftValidationError::SunShadowFractionValidationError(
-                        ShadowFractionValidationError::OutOfRange {
-                            field: ShadowFractionField::Value,
-                            range: "[0.0, 1.0]",
+                        ShadowFractionValidationError::ValueOutOfRange {
+                            lower: Bound::Included(0.0),
+                            upper: Bound::Included(1.0),
+                            value: 1.5,
                         }
                     )),
                     "The nested shadow fraction error must be wrapped by the spacecraft error"
@@ -792,11 +980,13 @@ mod tests {
 
         /// Order guarantees of the fail fast validation.
         mod fail_fast_order {
+            use core::ops::Bound;
+
             use crate::tests::{
                 VALID_INERTIA_DRAFT, VALID_SPACECRAFT_DRAFT, diagonal_inertia_draft,
                 model::{
                     InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-                    SpacecraftDraft, SpacecraftField, SpacecraftValidationError,
+                    SpacecraftDraft, SpacecraftValidationError,
                 },
             };
 
@@ -808,9 +998,10 @@ mod tests {
 
                 assert_eq!(
                     draft.validate(),
-                    Err(InertiaMatrixSerializableValidationError::OutOfRange {
-                        field: InertiaMatrixSerializableField::Xx,
-                        range: "]Type::zero(), Type::infinity()[",
+                    Err(InertiaMatrixSerializableValidationError::XxOutOfRange {
+                        lower: Bound::Excluded(0.0),
+                        upper: Bound::Excluded(f64::INFINITY),
+                        value: 0.0,
                     }),
                     "The xx field is declared first so its error must be reported"
                 );
@@ -842,9 +1033,10 @@ mod tests {
 
                 assert_eq!(
                     draft.validate(),
-                    Err(SpacecraftValidationError::OutOfRange {
-                        field: SpacecraftField::Mass,
-                        range: "[0.0, +inf[",
+                    Err(SpacecraftValidationError::MassOutOfRange {
+                        lower: Bound::Included(0.0),
+                        upper: Bound::Excluded(f64::INFINITY),
+                        value: -1.0,
                     }),
                     "The mass field is declared first so its error must be reported"
                 );
@@ -854,11 +1046,13 @@ mod tests {
 
     /// Delegation of a validated enum to the payload of its variants.
     mod variant_validation {
+        use core::ops::Bound;
+
         use crate::tests::{
             VALID_CELESTIAL_BODY_DRAFT,
             model::{
-                CelestialBodyDraft, CelestialBodyField, CelestialBodyKindDraft,
-                CelestialBodyKindValidationError, CelestialBodyValidationError,
+                CelestialBodyDraft, CelestialBodyKindDraft, CelestialBodyKindValidationError,
+                CelestialBodyValidationError,
             },
         };
 
@@ -893,9 +1087,10 @@ mod tests {
                 })
                 .validate(),
                 Err(CelestialBodyKindValidationError::CustomValidationError(
-                    CelestialBodyValidationError::OutOfRange {
-                        field: CelestialBodyField::GravitationalParameter,
-                        range: "]0.0, +inf[",
+                    CelestialBodyValidationError::GravitationalParameterOutOfRange {
+                        lower: Bound::Excluded(0.0),
+                        upper: Bound::Excluded(f64::INFINITY),
+                        value: 0.0,
                     }
                 )),
                 "The custom variant must wrap the error of its own payload type"
@@ -1141,7 +1336,7 @@ mod tests {
 
     /// Construction entry points of the validated types.
     mod construction {
-        use core::error::Error as _;
+        use core::{error::Error as _, ops::Bound};
 
         use crate::{
             Validate as _,
@@ -1151,13 +1346,11 @@ mod tests {
                 VALID_SPACECRAFT_DRAFT, assert_float_eq, custom_gravitational_parameter,
                 diagonal_inertia_draft, diagonal_inertia_draft_with_precision,
                 model::{
-                    CelestialBodyField, CelestialBodyKind, CelestialBodyKindDraft,
-                    CelestialBodyKindValidationError, CelestialBodyValidationError,
-                    InertiaMatrixSerializable, InertiaMatrixSerializableField,
+                    CelestialBodyKind, CelestialBodyKindDraft, CelestialBodyKindValidationError,
+                    CelestialBodyValidationError, InertiaMatrixSerializable,
                     InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
-                    ShadowFractionField, ShadowFractionValidationError, Spacecraft,
-                    SpacecraftDraft, SpacecraftField, SpacecraftMassSumValidationError,
-                    SpacecraftValidationError,
+                    ShadowFractionValidationError, Spacecraft, SpacecraftDraft, SpacecraftField,
+                    SpacecraftMassSumValidationError, SpacecraftValidationError,
                 },
                 spacecraft_draft_with_area, spacecraft_draft_with_masses,
             },
@@ -1187,9 +1380,10 @@ mod tests {
 
             assert_eq!(
                 InertiaMatrixSerializable::new(draft).err(),
-                Some(InertiaMatrixSerializableValidationError::OutOfRange {
-                    field: InertiaMatrixSerializableField::Xx,
-                    range: "]Type::zero(), Type::infinity()[",
+                Some(InertiaMatrixSerializableValidationError::XxOutOfRange {
+                    lower: Bound::Excluded(0.0),
+                    upper: Bound::Excluded(f64::INFINITY),
+                    value: 0.0,
                 }),
                 "The construction must report the first field error found"
             );
@@ -1207,9 +1401,10 @@ mod tests {
         fn shadow_new_invalid() {
             assert_eq!(
                 ShadowFraction::new(ShadowFractionDraft(1.5)).err(),
-                Some(ShadowFractionValidationError::OutOfRange {
-                    field: ShadowFractionField::Value,
-                    range: "[0.0, 1.0]",
+                Some(ShadowFractionValidationError::ValueOutOfRange {
+                    lower: Bound::Included(0.0),
+                    upper: Bound::Included(1.0),
+                    value: 1.5,
                 }),
                 "A shadow fraction above the upper bound must not build"
             );
@@ -1384,10 +1579,11 @@ mod tests {
             // The wrapper of the inertia matrix holds the error of the mirror,
             // because the hand-written bridge of the wrapper borrows the error of its mirror
             assert_eq!(
-                source.downcast_ref::<InertiaMatrixSerializableValidationError>(),
-                Some(&InertiaMatrixSerializableValidationError::OutOfRange {
-                    field: InertiaMatrixSerializableField::Xx,
-                    range: "]Type::zero(), Type::infinity()[",
+                source.downcast_ref::<InertiaMatrixSerializableValidationError<f64>>(),
+                Some(&InertiaMatrixSerializableValidationError::XxOutOfRange {
+                    lower: Bound::Excluded(0.0),
+                    upper: Bound::Excluded(f64::INFINITY),
+                    value: 0.0,
                 }),
                 "The source of the spacecraft error must be the error of the inertia mirror"
             );
@@ -1415,9 +1611,10 @@ mod tests {
             assert_eq!(
                 Spacecraft::new(draft).err(),
                 Some(SpacecraftValidationError::InertiaMatrixValidationError(
-                    InertiaMatrixSerializableValidationError::OutOfRange {
-                        field: InertiaMatrixSerializableField::Xx,
-                        range: "]Type::zero(), Type::infinity()[",
+                    InertiaMatrixSerializableValidationError::XxOutOfRange {
+                        lower: Bound::Excluded(0.0),
+                        upper: Bound::Excluded(f64::INFINITY),
+                        value: 0.0,
                     }
                 )),
                 "The spacecraft error must wrap the error of the nested inertia matrix"
@@ -1436,9 +1633,10 @@ mod tests {
             assert_eq!(
                 Spacecraft::new(draft).err(),
                 Some(SpacecraftValidationError::InertiaMatrixValidationError(
-                    InertiaMatrixSerializableValidationError::OutOfRange {
-                        field: InertiaMatrixSerializableField::Xx,
-                        range: "]Type::zero(), Type::infinity()[",
+                    InertiaMatrixSerializableValidationError::XxOutOfRange {
+                        lower: Bound::Excluded(0.0_f32),
+                        upper: Bound::Excluded(f32::INFINITY),
+                        value: 0.0_f32,
                     }
                 )),
                 "The single precision spacecraft error must wrap the error of its nested matrix"
@@ -1475,9 +1673,10 @@ mod tests {
                 Some(
                     SpacecraftValidationError::PrimaryOrbitedBodyValidationError(
                         CelestialBodyKindValidationError::CustomValidationError(
-                            CelestialBodyValidationError::OutOfRange {
-                                field: CelestialBodyField::GravitationalParameter,
-                                range: "]0.0, +inf[",
+                            CelestialBodyValidationError::GravitationalParameterOutOfRange {
+                                lower: Bound::Excluded(0.0),
+                                upper: Bound::Excluded(f64::INFINITY),
+                                value: 0.0,
                             }
                         )
                     )
@@ -1504,9 +1703,10 @@ mod tests {
             assert_eq!(
                 source.downcast_ref::<CelestialBodyKindValidationError>(),
                 Some(&CelestialBodyKindValidationError::CustomValidationError(
-                    CelestialBodyValidationError::OutOfRange {
-                        field: CelestialBodyField::GravitationalParameter,
-                        range: "]0.0, +inf[",
+                    CelestialBodyValidationError::GravitationalParameterOutOfRange {
+                        lower: Bound::Excluded(0.0),
+                        upper: Bound::Excluded(f64::INFINITY),
+                        value: 0.0,
                     }
                 )),
                 "The source of the spacecraft error must be the error of the celestial body kind"
@@ -1590,6 +1790,8 @@ mod tests {
 
     /// Validated setters and draft round trips.
     mod patch {
+        use core::ops::Bound;
+
         use crate::{
             Patch as _, Validate as _,
             tests::{
@@ -1599,8 +1801,7 @@ mod tests {
                 model::{
                     CelestialBodyKind, CelestialBodyKindDraft, InertiaMatrix,
                     InertiaMatrixRealizabilityValidationError, InertiaMatrixSerializable,
-                    InertiaMatrixSerializableField, InertiaMatrixSerializableValidationError,
-                    ShadowFraction, ShadowFractionDraft, ShadowFractionField,
+                    InertiaMatrixSerializableValidationError, ShadowFraction, ShadowFractionDraft,
                     ShadowFractionValidationError, Spacecraft, SpacecraftField,
                     SpacecraftMassSumValidationError, SpacecraftValidationError,
                 },
@@ -1628,9 +1829,10 @@ mod tests {
 
             assert_eq!(
                 matrix.set_xx(0.0),
-                Err(InertiaMatrixSerializableValidationError::OutOfRange {
-                    field: InertiaMatrixSerializableField::Xx,
-                    range: "]Type::zero(), Type::infinity()[",
+                Err(InertiaMatrixSerializableValidationError::XxOutOfRange {
+                    lower: Bound::Excluded(0.0),
+                    upper: Bound::Excluded(f64::INFINITY),
+                    value: 0.0,
                 }),
                 "An xx update to the excluded lower bound must be rejected"
             );
@@ -1684,9 +1886,10 @@ mod tests {
 
             assert_eq!(
                 fraction.set_value(2.0),
-                Err(ShadowFractionValidationError::OutOfRange {
-                    field: ShadowFractionField::Value,
-                    range: "[0.0, 1.0]",
+                Err(ShadowFractionValidationError::ValueOutOfRange {
+                    lower: Bound::Included(0.0),
+                    upper: Bound::Included(1.0),
+                    value: 2.0,
                 }),
                 "A shadow fraction update above the upper bound must be rejected"
             );

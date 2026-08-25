@@ -1,5 +1,7 @@
 //! A validated type with a lifetime parameter, which its skipped field borrows.
 
+use core::ops::Bound;
+
 use valide::{Patch as _, Validate as _};
 
 /// Sample tagged with a borrowed sensor name.
@@ -38,9 +40,10 @@ fn main() {
             value: 1.5,
         })
         .err(),
-        Some(SampleValidationError::OutOfRange {
-            field: SampleField::Value,
-            range: "[0.0, 1.0]",
+        Some(SampleValidationError::ValueOutOfRange {
+            lower: Bound::Included(0.0),
+            upper: Bound::Included(1.0),
+            value: 1.5,
         }),
         "A value above the range must be rejected"
     );

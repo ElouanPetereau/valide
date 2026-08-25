@@ -36,10 +36,12 @@ pub(crate) enum Shape {
 pub(crate) enum FieldRule {
     /// The value must be inside a range.
     Range {
-        /// Tokens of the range, which the generated check uses as its `RangeBounds` implementor.
-        check_tokens: TokenStream,
-        /// Range text that the generated error carries.
-        text: String,
+        /// Expression of the lower bound of the range, an absolute [`Bound`](core::ops::Bound) variant.
+        lower: TokenStream,
+        /// Expression of the upper bound of the range, an absolute [`Bound`](core::ops::Bound) variant.
+        upper: TokenStream,
+        /// Variant of the generated error enum that carries the two evaluated bounds and the rejected value.
+        error_variant: Ident,
     },
     /// The value must be a finite number.
     Finite,
@@ -68,7 +70,8 @@ pub(crate) struct FieldIntermediateRepresentation {
     /// Name that the generated identifiers use, `value` for the field of a newtype.
     pub(crate) logical_name: String,
     /// Variant of the field enum that names the field.
-    /// Only a range or a finite field has one, because only those two report the field they hold.
+    /// Only a finite field has one, because it is the only rule that reports the field it holds.
+    // TODO: Update finite so it follows the same rules as OutOfRange, one variant per field.
     pub(crate) variant: Option<Ident>,
     /// Declared type of the field.
     pub(crate) ty: Type,
@@ -83,11 +86,24 @@ pub(crate) struct FieldIntermediateRepresentation {
 
 impl FieldIntermediateRepresentation {
     /// Return the field enum variant of the field.
-    /// Only a range or a finite field carries one, and only those two ask for it.
+    /// Only a finite field carries one, and only a finite field asks for it.
+    // TODO: Update finite so it follows the same rules as OutOfRange, one variant per field so no need to hold the field.
     pub(crate) fn enum_variant(&self) -> &Ident {
         self.variant
             .as_ref()
-            .expect("a range or a finite field always carries a variant")
+            .expect("a finite field always carries a variant")
+    }
+
+    /// Return the error enum variant of the field, absent while the rule of the field declares no range.
+    /// Only a range field carries one, because it is the only rule with a variant of its own.
+    pub(crate) fn range_variant(&self) -> Option<&Ident> {
+        match &self.rule {
+            FieldRule::Range { error_variant, .. } => Some(error_variant),
+            FieldRule::Finite
+            | FieldRule::Nested { .. }
+            | FieldRule::Custom { .. }
+            | FieldRule::Skip => None,
+        }
     }
 
     /// Return the wrapper variant of the field, absent while the rule of the field reaches the generated error enum with no wrapper.
@@ -263,12 +279,12 @@ pub(crate) struct TypeIntermediateRepresentation {
 }
 
 impl TypeIntermediateRepresentation {
-    /// Whether at least one field carries a range rule.
-    /// The generated error enum then carries the `OutOfRange` variant.
-    pub(crate) fn has_range(&self) -> bool {
+    /// Return the error enum variant of every range field of the validated type, in declaration order.
+    /// Each variant carries the two evaluated bounds of its own field and the rejected value.
+    pub(crate) fn range_variants(&self) -> impl Iterator<Item = &Ident> {
         self.fields
             .iter()
-            .any(|field| matches!(field.rule, FieldRule::Range { .. }))
+            .filter_map(FieldIntermediateRepresentation::range_variant)
     }
 
     /// Whether at least one field carries a finite rule.

@@ -39,32 +39,35 @@ fn main() {
     below_the_pair.bound_pair = -1.0;
     assert_eq!(
         Readings::new(below_the_pair).err(),
-        Some(ReadingsValidationError::OutOfRange {
-            field: ReadingsField::BoundPair,
-            range: "[0.0, +inf]",
+        Some(ReadingsValidationError::BoundPairOutOfRange {
+            lower: Bound::Included(0.0),
+            upper: Bound::Unbounded,
+            value: -1.0,
         }),
-        "An unbounded upper end must be rendered as an included positive infinity"
+        "An unbounded upper end must reach the rejection as an unbounded bound"
     );
 
     let mut below_the_sugar = valid_draft();
     below_the_sugar.open_upper = -1.0;
     assert_eq!(
         Readings::new(below_the_sugar).err(),
-        Some(ReadingsValidationError::OutOfRange {
-            field: ReadingsField::OpenUpper,
-            range: "[0.0, +inf]",
+        Some(ReadingsValidationError::OpenUpperOutOfRange {
+            lower: Bound::Included(0.0),
+            upper: Bound::Unbounded,
+            value: -1.0,
         }),
-        "A missing upper bound must be rendered as an included positive infinity"
+        "A missing upper bound must reach the rejection as an unbounded bound"
     );
 
     let mut above_the_sugar = valid_draft();
     above_the_sugar.open_lower = 2.0;
     assert_eq!(
         Readings::new(above_the_sugar).err(),
-        Some(ReadingsValidationError::OutOfRange {
-            field: ReadingsField::OpenLower,
-            range: "[-inf, 1.0]",
+        Some(ReadingsValidationError::OpenLowerOutOfRange {
+            lower: Bound::Unbounded,
+            upper: Bound::Included(1.0),
+            value: 2.0,
         }),
-        "A missing lower bound must be rendered as an included negative infinity"
+        "A missing lower bound must reach the rejection as an unbounded bound"
     );
 }

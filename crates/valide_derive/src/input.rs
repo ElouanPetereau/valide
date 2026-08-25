@@ -9,9 +9,9 @@ use core::ptr;
 use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
 use quote::{ToTokens as _, quote};
 use syn::{
-    Attribute, Data, DataStruct, DeriveInput, Error, Expr, Field, Fields, GenericParam, Generics,
-    Ident, Index, Member, Meta, MetaList, Path, Result, Token, Variant, Visibility,
-    parse::ParseStream, punctuated::Punctuated, spanned::Spanned as _,
+    Attribute, Data, DataStruct, DeriveInput, Error, Expr, ExprRange, Field, Fields, GenericParam,
+    Generics, Ident, Index, Member, Meta, MetaList, Path, RangeLimits, Result, Token, Variant,
+    Visibility, parse::ParseStream, punctuated::Punctuated, spanned::Spanned as _,
 };
 
 use crate::{
@@ -21,7 +21,6 @@ use crate::{
         VariantRule,
     },
     naming,
-    range_text::{self, BoundKind},
 };
 
 /// Name of the marker attribute of a field.
@@ -93,7 +92,7 @@ const FINAL_VALIDATION_MESSAGE: &str =
 const DRAFT_ATTR_MESSAGE: &str =
     "#[draft_attr(...)] takes the attribute to re-emit on the generated draft as its payload";
 /// Message of the rejection of a generic parameter that the generated error enum cannot carry.
-const ERROR_PAYLOAD_SUBSET_MESSAGE: &str = "the generated error enum must carry every generic parameter or none, and this parameter appears in no nested field type and in no final validation error type";
+const ERROR_PAYLOAD_SUBSET_MESSAGE: &str = "the generated error enum must carry every generic parameter or none, and this parameter appears in no range field type, in no nested type and in no error type that the enum carries";
 
 /// Parse the given `derive_input` into the intermediate representation of a validated type.
 /// Return every grammar error found. A single compilation reports all of them.
@@ -146,7 +145,7 @@ pub(crate) fn parse(derive_input: &DeriveInput) -> Result<TypeIntermediateRepres
         }
     }
 
-    if let Err(error) = check_wrapper_variants(&fields, &variants, &final_validations) {
+    if let Err(error) = check_error_enum_variants(&fields, &variants, &final_validations) {
         errors.push(error);
     }
     if let Err(error) = check_field_enum_variants(&fields) {
@@ -323,11 +322,14 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
     // so the check runs before the rule tells whether the field also carries a variant
     let field_variant = naming::field_variant(&logical_name, name_span)?;
     let rule = parse_field_marker(marker, &logical_name, name_span)?;
-    // Only a range or a finite field can name itself inside an error,
-    // so only those two rules get a field enum variant
+    // A finite field is the only one that names itself inside a shared error,
+    // so it is the only rule that gets a field enum variant
     let variant = match &rule {
-        FieldRule::Range { .. } | FieldRule::Finite => Some(field_variant),
-        FieldRule::Nested { .. } | FieldRule::Custom { .. } | FieldRule::Skip => None,
+        FieldRule::Finite => Some(field_variant),
+        FieldRule::Range { .. }
+        | FieldRule::Nested { .. }
+        | FieldRule::Custom { .. }
+        | FieldRule::Skip => None,
     };
 
     Ok(FieldIntermediateRepresentation {
@@ -359,7 +361,7 @@ fn parse_field_marker(
 
     if let Meta::List(list) = &marker {
         if list.path.is_ident(RANGE_MARKER) {
-            return parse_field_range(list);
+            return parse_field_range(list, logical_name, name_span);
         }
         if list.path.is_ident(CUSTOM_MARKER) {
             return parse_field_custom(list, logical_name, name_span);
@@ -402,33 +404,80 @@ fn parse_field_custom(list: &MetaList, logical_name: &str, name_span: Span) -> R
     })
 }
 
+/// One bound of a range, which the generated check reads as a [`Bound`](core::ops::Bound) value.
+/// Two variants hold the expression of the bound value.
+enum BoundKind<'expression> {
+    /// An included bound.
+    Included(&'expression Expr),
+    /// An excluded bound.
+    Excluded(&'expression Expr),
+    /// A bound that reaches the infinity.
+    Unbounded,
+}
+
+impl BoundKind<'_> {
+    /// Return the expression of the bound.
+    /// The path of the variant stays absolute, so the generated check reads no import of the caller.
+    fn expression(&self) -> TokenStream {
+        match self {
+            Self::Included(value) => quote! { ::core::ops::Bound::Included(#value) },
+            Self::Excluded(value) => quote! { ::core::ops::Bound::Excluded(#value) },
+            Self::Unbounded => quote! { ::core::ops::Bound::Unbounded },
+        }
+    }
+}
+
 /// Parse the arguments of the given `range` marker `list` into the rule of a field.
-fn parse_field_range(list: &MetaList) -> Result<FieldRule> {
+/// The field is called `logical_name`, with the name span `name_span`, which builds the error enum variant.
+/// The sugared form and the bound pair form both land on the same two bound expressions.
+fn parse_field_range(list: &MetaList, logical_name: &str, name_span: Span) -> Result<FieldRule> {
+    let error_variant = naming::range_variant(logical_name, name_span)?;
     let arguments = list.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
-    let mut arguments = arguments.iter();
-    let bounds = (arguments.next(), arguments.next(), arguments.next());
+    let mut argument_iterator = arguments.iter();
+    let bounds = (
+        argument_iterator.next(),
+        argument_iterator.next(),
+        argument_iterator.next(),
+    );
 
     if let (Some(single), None, None) = bounds {
         let Expr::Range(range) = single else {
             return Err(Error::new_spanned(single, RANGE_MESSAGE));
         };
+        let (lower, upper) = sugared_bounds(range);
 
         return Ok(FieldRule::Range {
-            check_tokens: range.to_token_stream(),
-            text: range_text::sugared_text(range),
+            lower: lower.expression(),
+            upper: upper.expression(),
+            error_variant,
         });
     }
     if let (Some(lower), Some(upper), None) = bounds {
-        let lower_bound = parse_bound(lower)?;
-        let upper_bound = parse_bound(upper)?;
-
         return Ok(FieldRule::Range {
-            check_tokens: quote! { (#lower, #upper) },
-            text: range_text::bound_pair_text(&lower_bound, &upper_bound),
+            lower: parse_bound(lower)?.expression(),
+            upper: parse_bound(upper)?.expression(),
+            error_variant,
         });
     }
 
     Err(Error::new_spanned(list, RANGE_MESSAGE))
+}
+
+/// Return the two bounds of the given sugared `range` expression.
+/// A missing end reaches the infinity, so it gives an unbounded bound,
+/// and the limits of the range give the kind of the upper bound.
+fn sugared_bounds(range: &ExprRange) -> (BoundKind<'_>, BoundKind<'_>) {
+    let lower = range
+        .start
+        .as_ref()
+        .map_or(BoundKind::Unbounded, |start| BoundKind::Included(start));
+    let upper = match (range.end.as_ref(), &range.limits) {
+        (None, _) => BoundKind::Unbounded,
+        (Some(end), RangeLimits::Closed(_)) => BoundKind::Included(end),
+        (Some(end), RangeLimits::HalfOpen(_)) => BoundKind::Excluded(end),
+    };
+
+    (lower, upper)
 }
 
 /// Classify the given `expression` as one bound of the bound pair form of a range.
@@ -695,6 +744,7 @@ fn used_error_parameters<'generics>(
 }
 
 /// Return the tokens of every type that reaches the generated error enum of a validated type.
+/// A range field contributes its declared type, which the variant of the field carries twice as a bound and once as the rejected value.
 /// A nested field contributes its declared type, whose own error the enum wraps.
 /// A nested variant payload contributes its declared type the same way.
 /// A custom field contributes the error type that its function returns.
@@ -704,6 +754,10 @@ fn error_payload_types(
     variants: &[VariantIntermediateRepresentation],
     final_validations: &[FinalValidation],
 ) -> impl Iterator<Item = TokenStream> {
+    let range_types = fields
+        .iter()
+        .filter(|field| matches!(field.rule, FieldRule::Range { .. }))
+        .map(|field| field.ty.to_token_stream());
     let nested_types = fields
         .iter()
         .filter(|field| matches!(field.rule, FieldRule::Nested { .. }))
@@ -724,7 +778,8 @@ fn error_payload_types(
         .iter()
         .map(|final_validation| final_validation.error_ty.to_token_stream());
 
-    nested_types
+    range_types
+        .chain(nested_types)
         .chain(custom_error_types)
         .chain(nested_payload_types)
         .chain(final_validation_error_types)
@@ -838,28 +893,43 @@ fn check_field_enum_variants(fields: &[FieldIntermediateRepresentation]) -> Resu
     Err(error)
 }
 
-/// Check that the wrapper variants generated for `fields`, for `variants` and for `final_validations` are all distinct.
-fn check_wrapper_variants(
+/// Check that the variants generated for the error enum of a validated type are all distinct.
+/// The enum carries one variant per range field of `fields`, the shared finite variant,
+/// and one wrapper variant per nested field of `fields`, per custom field of `fields`,
+/// per nested payload of `variants` and per final validation of `final_validations`.
+fn check_error_enum_variants(
     fields: &[FieldIntermediateRepresentation],
     variants: &[VariantIntermediateRepresentation],
     final_validations: &[FinalValidation],
 ) -> Result<()> {
-    let mut wrapper_variants: Vec<Ident> = Vec::new();
+    let mut error_variants: Vec<Ident> = Vec::new();
+    for field in fields {
+        if let Some(range_variant) = field.range_variant() {
+            error_variants.push(range_variant.clone());
+        }
+    }
+    // Every finite field shares a single variant, so one finite field is enough to generate it
+    if fields
+        .iter()
+        .any(|field| matches!(field.rule, FieldRule::Finite))
+    {
+        error_variants.push(naming::not_finite_variant());
+    }
     for field in fields {
         if let Some(wrapper_variant) = field.wrapper_variant() {
-            wrapper_variants.push(wrapper_variant.clone());
+            error_variants.push(wrapper_variant.clone());
         }
     }
     for variant in variants {
         if let Some((_, wrapper_variant)) = variant.nested_payload() {
-            wrapper_variants.push(wrapper_variant.clone());
+            error_variants.push(wrapper_variant.clone());
         }
     }
     for final_validation in final_validations {
-        wrapper_variants.push(final_validation.wrapper_variant.clone());
+        error_variants.push(final_validation.wrapper_variant.clone());
     }
 
-    let Some((first, second)) = naming::first_collision(&wrapper_variants) else {
+    let Some((first, second)) = naming::first_collision(&error_variants) else {
         return Ok(());
     };
     let mut error = Error::new(
@@ -878,15 +948,15 @@ fn check_wrapper_variants(
 
 #[cfg(test)]
 mod tests {
-    use proc_macro2::{Ident, Span};
-    use quote::ToTokens as _;
+    use proc_macro2::{Ident, Span, TokenStream};
+    use quote::{ToTokens as _, quote};
     use syn::{DeriveInput, Generics, Member, parse_str};
 
     use crate::{
         input::{
             CUSTOM_MESSAGE, ERROR_PAYLOAD_SUBSET_MESSAGE, MARKER_MESSAGE, PAYLOAD_MARKER_MESSAGE,
-            PRIVATE_FIELD_MESSAGE, UNION_MESSAGE, VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE,
-            parameter_name, parse, used_error_parameters,
+            PRIVATE_FIELD_MESSAGE, RANGE_MESSAGE, UNION_MESSAGE, VARIANT_MARKER_MESSAGE,
+            VARIANT_SHAPE_MESSAGE, parameter_name, parse, used_error_parameters,
         },
         intermediate_representation::{
             FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
@@ -897,6 +967,23 @@ mod tests {
     /// Build an identifier from `name`, with the call site span.
     fn ident(name: &str) -> Ident {
         Ident::new(name, Span::call_site())
+    }
+
+    /// Build a range field whose declared type is `declared_type`.
+    fn range_field(declared_type: &str) -> FieldIntermediateRepresentation {
+        FieldIntermediateRepresentation {
+            member: Member::Named(ident("value")),
+            logical_name: "value".to_owned(),
+            variant: None,
+            ty: parse_str(declared_type).expect("the tested field type must parse"),
+            docs: Vec::new(),
+            passthrough: Vec::new(),
+            rule: FieldRule::Range {
+                lower: quote! { ::core::ops::Bound::Unbounded },
+                upper: quote! { ::core::ops::Bound::Unbounded },
+                error_variant: ident("ValueOutOfRange"),
+            },
+        }
     }
 
     /// Build a nested field whose declared type is `declared_type`.
@@ -947,6 +1034,28 @@ mod tests {
             parse_str(source).expect("the tested derive input must parse");
 
         parse(&derive_input).expect("the tested derive input must be accepted")
+    }
+
+    /// Return the two bound expressions that the `range` marker written `range_arguments` derives.
+    /// Each expression comes as its token text without a space, and a bar separates the two.
+    fn derived_bounds(range_arguments: &str) -> String {
+        let source =
+            format!("struct Reading {{ #[validate(range({range_arguments}))] value: f64 }}");
+        let intermediate_representation = accepted(&source);
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+        let FieldRule::Range { lower, upper, .. } = &field.rule else {
+            panic!("the range marker must give a range rule");
+        };
+
+        format!("{} | {}", token_text(lower), token_text(upper))
+    }
+
+    /// Return the text of the given `tokens` with every space removed.
+    fn token_text(tokens: &TokenStream) -> String {
+        tokens.to_string().split_whitespace().collect()
     }
 
     /// Return the messages of the rejections that the parsing of `source` produces.
@@ -1417,6 +1526,137 @@ mod tests {
                 "the same `ExtendValidationError` variant also comes from here".to_owned(),
             ],
             "A variant wrapper and a final validation wrapper that share a name must be rejected"
+        );
+    }
+
+    #[test]
+    fn every_sugared_range_gives_its_two_bounds() {
+        assert_eq!(
+            derived_bounds("0.0..=1.0"),
+            "::core::ops::Bound::Included(0.0) | ::core::ops::Bound::Included(1.0)",
+            "An inclusive range must give two included bounds"
+        );
+        assert_eq!(
+            derived_bounds("0.0..1.0"),
+            "::core::ops::Bound::Included(0.0) | ::core::ops::Bound::Excluded(1.0)",
+            "An exclusive range must give an included bound and an excluded one"
+        );
+        assert_eq!(
+            derived_bounds("0.0.."),
+            "::core::ops::Bound::Included(0.0) | ::core::ops::Bound::Unbounded",
+            "A range without an end must give an included bound and an unbounded one"
+        );
+        assert_eq!(
+            derived_bounds("..1.0"),
+            "::core::ops::Bound::Unbounded | ::core::ops::Bound::Excluded(1.0)",
+            "A range without a start must give an unbounded bound and an excluded one"
+        );
+        assert_eq!(
+            derived_bounds("..=1.0"),
+            "::core::ops::Bound::Unbounded | ::core::ops::Bound::Included(1.0)",
+            "An inclusive range without a start must give an unbounded bound and an included one"
+        );
+        assert_eq!(
+            derived_bounds(".."),
+            "::core::ops::Bound::Unbounded | ::core::ops::Bound::Unbounded",
+            "A range without an end at all must give two unbounded bounds"
+        );
+    }
+
+    #[test]
+    fn a_range_bound_keeps_the_expression_of_the_caller() {
+        assert_eq!(
+            derived_bounds("Number::ZERO..=Number::ONE"),
+            "::core::ops::Bound::Included(Number::ZERO) | ::core::ops::Bound::Included(Number::ONE)",
+            "A bound that reads an associated constant must reach the expression of the caller"
+        );
+    }
+
+    #[test]
+    fn the_bound_pair_form_carries_the_absolute_path_of_every_bound() {
+        assert_eq!(
+            derived_bounds("Bound::Excluded(0.0), Bound::Included(10_000.0)"),
+            "::core::ops::Bound::Excluded(0.0) | ::core::ops::Bound::Included(10_000.0)",
+            "The bound pair form must re-emit its two bounds with the absolute path"
+        );
+        assert_eq!(
+            derived_bounds("core::ops::Bound::Included(0.0), Bound::Unbounded"),
+            "::core::ops::Bound::Included(0.0) | ::core::ops::Bound::Unbounded",
+            "A bound that the caller spells with its own path must reach the absolute path too"
+        );
+    }
+
+    #[test]
+    fn a_range_marker_with_a_single_bound_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "struct Fraction { #[validate(range(Bound::Unbounded))] value: f64 }"
+            ),
+            vec![RANGE_MESSAGE.to_owned()],
+            "A single bound is no range expression, so it must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_range_field_carries_its_error_variant_and_no_field_variant() {
+        let intermediate_representation =
+            accepted("struct Spacecraft { #[validate(range(0.0..=1.0))] bus_mass: f64 }");
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+        let FieldRule::Range { error_variant, .. } = &field.rule else {
+            panic!("the range marker must give a range rule");
+        };
+
+        assert_eq!(
+            error_variant.to_string(),
+            "BusMassOutOfRange",
+            "The rule must carry the error enum variant of the field"
+        );
+        assert!(
+            field.variant.is_none(),
+            "A range field must carry no field enum variant, because it names itself in no shared error"
+        );
+    }
+
+    #[test]
+    fn a_range_field_type_reaches_an_error_payload() {
+        let fields = [range_field("Number")];
+
+        assert_eq!(
+            used_names("<Number>", &fields, &[]),
+            "Number",
+            "The declared type of a range field must reach the result"
+        );
+    }
+
+    #[test]
+    fn a_parameter_inside_a_range_field_type_makes_the_error_enum_generic() {
+        let intermediate_representation = accepted(
+            "struct Fraction<Number> { #[validate(range(Number::ZERO..=Number::ONE))] \
+             value: Number }",
+        );
+
+        assert!(
+            intermediate_representation.error_enum_is_generic,
+            "A range on a generic parameter must make the error enum generic"
+        );
+    }
+
+    #[test]
+    fn two_range_fields_that_collide_are_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "struct Spacecraft { #[validate(range(0.0..=1.0))] sun_shadow: f64, \
+                 #[validate(range(0.0..=1.0))] sunShadow: f64 }"
+            ),
+            vec![
+                "the generated error variant `SunShadowOutOfRange` would be generated twice"
+                    .to_owned(),
+                "the same `SunShadowOutOfRange` variant also comes from here".to_owned(),
+            ],
+            "Two range fields whose names give the same error variant must be rejected"
         );
     }
 }

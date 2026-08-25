@@ -1,5 +1,7 @@
 //! A field whose name is a raw identifier, which every derived name spells without its prefix.
 
+use core::ops::Bound;
+
 /// A token whose kind field needs a raw identifier.
 #[derive(Clone, valide_derive::Validate, valide_derive::Patch)]
 struct Token {
@@ -17,11 +19,12 @@ fn main() {
 
     assert_eq!(
         Token::new(TokenDraft { r#type: 2.0 }).err(),
-        Some(TokenValidationError::OutOfRange {
-            field: TokenField::Type,
-            range: "[0.0, 1.0]",
+        Some(TokenValidationError::TypeOutOfRange {
+            lower: Bound::Included(0.0),
+            upper: Bound::Included(1.0),
+            value: 2.0,
         }),
-        "The field enum variant must come from the name without its raw prefix"
+        "The error variant of the field must come from the name without its raw prefix"
     );
 
     assert!(

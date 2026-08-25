@@ -15,6 +15,7 @@ use crate::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
         VariantKind,
     },
+    naming,
 };
 
 /// Generate the validation functions of the draft of the validated type of `context`.
@@ -144,24 +145,40 @@ fn field_validator(
     let body = match &field.rule {
         // The early return above already handled this rule
         FieldRule::Skip => return None,
-        FieldRule::Range { check_tokens, text } => {
-            let variant = field.enum_variant();
+        // The two bounds are values of the declared type of the field,
+        // so the check reads them by reference and the rejection moves them into the error
+        FieldRule::Range {
+            lower,
+            upper,
+            error_variant,
+        } => {
+            let ty = &field.ty;
 
             quote! {
-                if !::core::ops::RangeBounds::contains(&(#check_tokens), &self.#member) {
-                    return ::core::result::Result::Err(#error_ident::OutOfRange {
-                        field: #field_enum_ident::#variant,
-                        range: #text,
+                let lower: ::core::ops::Bound<#ty> = #lower;
+                let upper: ::core::ops::Bound<#ty> = #upper;
+                if !::core::ops::RangeBounds::contains(
+                    &(
+                        ::core::ops::Bound::as_ref(&lower),
+                        ::core::ops::Bound::as_ref(&upper),
+                    ),
+                    &self.#member,
+                ) {
+                    return ::core::result::Result::Err(#error_ident::#error_variant {
+                        lower,
+                        upper,
+                        value: ::core::clone::Clone::clone(&self.#member),
                     });
                 }
             }
         }
         FieldRule::Finite => {
             let variant = field.enum_variant();
+            let not_finite_variant = naming::not_finite_variant();
 
             quote! {
                 if !self.#member.is_finite() {
-                    return ::core::result::Result::Err(#error_ident::NotFinite {
+                    return ::core::result::Result::Err(#error_ident::#not_finite_variant {
                         field: #field_enum_ident::#variant,
                     });
                 }

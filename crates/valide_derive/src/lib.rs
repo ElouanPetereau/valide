@@ -17,7 +17,6 @@ mod expand;
 mod input;
 mod intermediate_representation;
 mod naming;
-mod range_text;
 
 /// Generate the `Validate` implementation of the annotated type.
 /// The `validate`, `final_validation` and `draft_attr` helper attributes drive the generation.

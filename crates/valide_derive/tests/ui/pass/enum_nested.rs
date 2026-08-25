@@ -2,7 +2,7 @@
 //!
 //! The nested payload carries every rule of the enum, so a public variant constructor bypasses nothing.
 
-use core::error::Error;
+use core::{error::Error, ops::Bound};
 
 use serde::{Deserialize, Serialize};
 use valide::{Patch as _, Validate as _};
@@ -58,29 +58,31 @@ fn main() {
         .expect("1.5 is outside the range of a fraction");
     assert_eq!(
         rejection,
-        CommandValidationError::ExtendValidationError(FractionValidationError::OutOfRange {
-            field: FractionField::Value,
-            range: "[0.0, 1.0]",
+        CommandValidationError::ExtendValidationError(FractionValidationError::ValueOutOfRange {
+            lower: Bound::Included(0.0),
+            upper: Bound::Included(1.0),
+            value: 1.5,
         }),
         "A nested variant must wrap the error of its own payload type"
     );
     assert_eq!(
         rejection.to_string(),
-        "The value must be within the range [0.0, 1.0]",
+        "value must be within the range [0.0, 1.0]",
         "The wrapper variant must display the error that it holds"
     );
     let source = Error::source(&rejection).expect("A wrapper variant reports a source");
     assert_eq!(
         source.downcast_ref::<FractionValidationError>(),
-        Some(&FractionValidationError::OutOfRange {
-            field: FractionField::Value,
-            range: "[0.0, 1.0]",
+        Some(&FractionValidationError::ValueOutOfRange {
+            lower: Bound::Included(0.0),
+            upper: Bound::Included(1.0),
+            value: 1.5,
         }),
         "The source chain must reach the error of the payload type"
     );
 
-    let deserialized: Command = serde_json::from_str(r#"{"Extend":0.5}"#)
-        .expect("0.5 is inside the range of a fraction");
+    let deserialized: Command =
+        serde_json::from_str(r#"{"Extend":0.5}"#).expect("0.5 is inside the range of a fraction");
     assert_eq!(
         deserialized,
         Command::Extend(Fraction::new(FractionDraft(0.5)).expect("0.5 is inside the range")),

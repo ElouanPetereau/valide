@@ -1,5 +1,7 @@
 //! A named struct that carries every marker and a final validation.
 
+use core::ops::Bound;
+
 use valide::{Patch as _, Validate as _};
 
 /// Error of the sum check of a [`Whole`].
@@ -86,9 +88,10 @@ fn main() {
     assert_eq!(
         Whole::new(invalid_nested).err(),
         Some(WholeValidationError::FractionValidationError(
-            FractionValidationError::OutOfRange {
-                field: FractionField::Value,
-                range: "[0.0, 1.0]",
+            FractionValidationError::ValueOutOfRange {
+                lower: Bound::Included(0.0),
+                upper: Bound::Included(1.0),
+                value: 2.0,
             }
         )),
         "A nested field must wrap the error of its own type"

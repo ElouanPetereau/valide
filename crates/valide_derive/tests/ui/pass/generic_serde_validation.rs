@@ -3,6 +3,8 @@
 //! The serde attribute of the validated type carries the parameter inside its own text,
 //! and the generated draft mirrors the two serde derives.
 
+use core::fmt::Debug;
+
 use serde::{Deserialize, Serialize};
 
 /// Bounds of the unit interval at the precision of the implementor.
@@ -32,7 +34,7 @@ struct Scale<Number>(
     Number,
 )
 where
-    Number: UnitInterval + PartialOrd;
+    Number: UnitInterval + PartialOrd + Clone + Debug;
 
 fn main() {
     let single: Scale<f32> = serde_json::from_str("0.5").expect("0.5 is inside the unit interval");
@@ -59,7 +61,7 @@ fn main() {
     assert!(
         rejection
             .to_string()
-            .contains("must be within the range [Number::ZERO, Number::ONE]"),
+            .contains("must be within the range [0.0, 1.0]"),
         "The deserialization must report the validation error, and it says: {rejection}"
     );
 }
