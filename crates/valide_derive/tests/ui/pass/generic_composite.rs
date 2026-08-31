@@ -69,7 +69,7 @@ struct Measurement<Number: Precision + Debug>(
 #[final_validation(validate_ceiling, error = AboveCeilingError<Number>)]
 struct Reading<Number>
 where
-    Number: Precision + Debug + Display + 'static,
+    Number: Precision + Debug + Display,
 {
     /// Measurement of the reading.
     #[validate(nested)]
@@ -84,7 +84,7 @@ where
 
 impl<Number> Reading<Number>
 where
-    Number: Precision + Debug + Display + 'static,
+    Number: Precision + Debug + Display,
 {
     /// Check that the measurement of the given `draft` stays below the ceiling of its precision.
     fn validate_ceiling(draft: &ReadingDraft<Number>) -> Result<(), AboveCeilingError<Number>> {
@@ -102,7 +102,7 @@ where
 /// The draft carries the where clause of the reading, so the builder repeats it.
 fn reading_draft<Number>(measurement: Number, calibration: Number) -> ReadingDraft<Number>
 where
-    Number: Precision + Debug + Display + 'static,
+    Number: Precision + Debug + Display,
 {
     ReadingDraft {
         measurement: MeasurementDraft(measurement),
@@ -161,11 +161,11 @@ fn main() {
         "The measurement 150.5 is above the ceiling",
         "The generated enum must display the error that it holds"
     );
-    let double_source = Error::source(&double_error).expect("A wrapper variant reports a source");
-    assert_eq!(
-        double_source.downcast_ref::<AboveCeilingError<f64>>(),
-        Some(&AboveCeilingError { measurement: 150.5 }),
-        "The source chain must reach the error of the final validation"
+    // The wrapper variant already displays the error of the final validation, so it forwards the
+    // source of that error instead of reporting the error itself
+    assert!(
+        Error::source(&double_error).is_none(),
+        "The wrapper variant must forward the source of the final validation error, which reports none"
     );
 
     let new_measurement = Measurement::new(MeasurementDraft(3.5)).expect("3.5 is finite");
@@ -222,11 +222,9 @@ fn main() {
         "The measurement 120.5 is above the ceiling",
         "The generated enum must display the error of the single precision"
     );
-    let single_source = Error::source(&single_error).expect("A wrapper variant reports a source");
-    assert_eq!(
-        single_source.downcast_ref::<AboveCeilingError<f32>>(),
-        Some(&AboveCeilingError { measurement: 120.5 }),
-        "The source chain must reach the error of the single precision"
+    assert!(
+        Error::source(&single_error).is_none(),
+        "The wrapper variant of the single precision must forward the source of its final validation error, which reports none"
     );
 
     let restored = Reading::<f32>::from_draft(single.to_draft()).expect("The draft stays valid");

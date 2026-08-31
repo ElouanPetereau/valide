@@ -68,10 +68,11 @@ fn main() {
         "The designation must carry at least one character",
         "The wrapper must display the error that it holds"
     );
-    assert_eq!(
-        rejection.source().map(ToString::to_string),
-        Some("The designation must carry at least one character".to_owned()),
-        "The wrapper must report the error that it holds as its source"
+    // The wrapper already displays the error that it holds, so it forwards the source of that
+    // error instead of reporting the error itself
+    assert!(
+        rejection.source().is_none(),
+        "The wrapper must forward the source of the error that it holds, which reports none"
     );
 
     assert_eq!(

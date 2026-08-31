@@ -70,15 +70,11 @@ fn main() {
         "value must be within the range [0.0, 1.0]",
         "The wrapper variant must display the error that it holds"
     );
-    let source = Error::source(&rejection).expect("A wrapper variant reports a source");
-    assert_eq!(
-        source.downcast_ref::<FractionValidationError>(),
-        Some(&FractionValidationError::ValueOutOfRange {
-            lower: Bound::Included(0.0),
-            upper: Bound::Included(1.0),
-            value: 1.5,
-        }),
-        "The source chain must reach the error of the payload type"
+    // The wrapper variant already displays the error of the payload, so it forwards the source of
+    // that error instead of reporting the error itself
+    assert!(
+        Error::source(&rejection).is_none(),
+        "The wrapper variant must forward the source of the payload error, which reports none"
     );
 
     let deserialized: Command =

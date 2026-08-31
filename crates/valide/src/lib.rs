@@ -1431,6 +1431,49 @@ mod tests {
             },
         };
 
+        /// Reason that the parity check of a [`PropulsionBay`] rejected a draft.
+        #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
+        #[error("The thruster count must be an even number")]
+        struct OddThrusterCountError;
+
+        /// Error of the parity check of a [`PropulsionBay`], which reports its reason as its own source.
+        #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
+        #[error("The thruster count of the propulsion bay is invalid")]
+        struct ThrusterCountError {
+            /// Reason that the parity check rejected the draft.
+            #[source]
+            reason: OddThrusterCountError,
+        }
+
+        /// Propulsion bay whose final validation reports an error that carries a source of its own.
+        /// The generated wrapper of that error is the only model case where the forwarded source exists.
+        #[derive(valide_derive::Validate)]
+        #[final_validation(validate_thruster_parity, error = ThrusterCountError)]
+        struct PropulsionBay {
+            /// Number of thrusters of the bay.
+            #[validate(range(1..=8))]
+            thruster_count: u8,
+        }
+
+        #[expect(
+            clippy::multiple_inherent_impl,
+            reason = "the derive generates some part of the struct"
+        )]
+        impl PropulsionBay {
+            /// Check that the `thruster_count` of the given `draft` is an even number.
+            fn validate_thruster_parity(
+                draft: &PropulsionBayDraft,
+            ) -> Result<(), ThrusterCountError> {
+                if draft.thruster_count % 2 == 1 {
+                    return Err(ThrusterCountError {
+                        reason: OddThrusterCountError,
+                    });
+                }
+
+                Ok(())
+            }
+        }
+
         #[test]
         fn serializable_new_accepts_valid_draft_and_preserves_fields() {
             let matrix = InertiaMatrixSerializable::new(VALID_INERTIA_DRAFT)
@@ -1628,7 +1671,7 @@ mod tests {
         }
 
         #[test]
-        fn a_wrapper_variant_reports_the_error_it_holds_as_its_source() {
+        fn a_wrapper_variant_forwards_the_source_of_the_error_of_the_nested_field() {
             let draft = SpacecraftDraft {
                 inertia_matrix: diagonal_inertia_draft(0.0, 3.0, 4.0),
                 ..VALID_SPACECRAFT_DRAFT
@@ -1636,15 +1679,22 @@ mod tests {
             let error = Spacecraft::new(draft)
                 .err()
                 .expect("A zero inertia diagonal must be rejected");
+            let SpacecraftValidationError::InertiaMatrixValidationError(ref nested_error) = error
+            else {
+                panic!("The rejection must be the wrapper of the nested inertia matrix");
+            };
 
-            assert!(
-                error.source().is_some(),
-                "A wrapper variant must report the error of the nested field as its source"
+            // The nested error is a range variant, which holds no error and reports no source,
+            // so the transparent wrapper must report no source either
+            assert_eq!(
+                error.source().map(ToString::to_string),
+                nested_error.source().map(ToString::to_string),
+                "A wrapper variant is transparent, so its source must be the source of the nested error itself"
             );
         }
 
         #[test]
-        fn a_wrapper_variant_reports_the_mirror_error_of_the_nested_field_as_its_source() {
+        fn a_wrapper_variant_keeps_the_mirror_error_of_the_nested_field_out_of_its_source_chain() {
             let draft = SpacecraftDraft {
                 inertia_matrix: diagonal_inertia_draft(0.0, 3.0, 4.0),
                 ..VALID_SPACECRAFT_DRAFT
@@ -1652,20 +1702,16 @@ mod tests {
             let error = Spacecraft::new(draft)
                 .err()
                 .expect("A zero inertia diagonal must be rejected");
-            let source = error
-                .source()
-                .expect("The wrapper variant must report the nested error as its source");
 
-            // The wrapper of the inertia matrix holds the error of the mirror,
-            // because the hand-written bridge of the wrapper borrows the error of its mirror
-            assert_eq!(
-                source.downcast_ref::<InertiaMatrixSerializableValidationError<f64>>(),
-                Some(&InertiaMatrixSerializableValidationError::XxOutOfRange {
-                    lower: Bound::Excluded(0.0),
-                    upper: Bound::Excluded(f64::INFINITY),
-                    value: 0.0,
-                }),
-                "The source of the spacecraft error must be the error of the inertia mirror"
+            // The wrapper of the inertia matrix holds the error of the mirror and displays it,
+            // so a transparent wrapper must never report that same error as its source
+            assert!(
+                error
+                    .source()
+                    .and_then(|source| source
+                        .downcast_ref::<InertiaMatrixSerializableValidationError<f64>>())
+                    .is_none(),
+                "The error of the inertia mirror must stay out of the source chain, because the wrapper already displays it"
             );
         }
 
@@ -1766,7 +1812,7 @@ mod tests {
         }
 
         #[test]
-        fn a_wrapper_variant_reports_the_error_of_the_nested_enum_as_its_source() {
+        fn two_stacked_wrapper_variants_forward_the_source_down_to_the_leaf_error() {
             let draft = SpacecraftDraft {
                 primary_orbited_body: CelestialBodyKindDraft::Custom(CelestialBodyDraft {
                     gravitational_parameter: 0.0,
@@ -1776,20 +1822,52 @@ mod tests {
             let error = Spacecraft::new(draft)
                 .err()
                 .expect("A custom body with a zero gravitational parameter must be rejected");
-            let source = error
-                .source()
-                .expect("The wrapper variant must report the nested error as its source");
+            let SpacecraftValidationError::PrimaryOrbitedBodyValidationError(ref kind_error) =
+                error
+            else {
+                panic!("The rejection must be the wrapper of the nested celestial body kind");
+            };
 
             assert_eq!(
-                source.downcast_ref::<CelestialBodyKindValidationError>(),
-                Some(&CelestialBodyKindValidationError::CustomValidationError(
-                    CelestialBodyValidationError::GravitationalParameterOutOfRange {
-                        lower: Bound::Excluded(0.0),
-                        upper: Bound::Excluded(f64::INFINITY),
-                        value: 0.0,
-                    }
-                )),
-                "The source of the spacecraft error must be the error of the celestial body kind"
+                error.source().map(ToString::to_string),
+                kind_error.source().map(ToString::to_string),
+                "A wrapper variant is transparent, so its source must be the source of the celestial body kind error itself"
+            );
+            // The two stacked wrappers display the same leaf message,
+            // so a report that walks the chain must print that message once only
+            assert!(
+                error.source().is_none(),
+                "The two transparent wrappers must forward the source down to the leaf error, which reports none"
+            );
+        }
+
+        #[test]
+        fn propulsion_bay_new_accepts_an_even_thruster_count() {
+            let bay = PropulsionBay::new(PropulsionBayDraft { thruster_count: 4 })
+                .expect("An even thruster count must build a propulsion bay");
+
+            assert_eq!(
+                bay.thruster_count(),
+                4,
+                "The accepted draft must keep the thruster count of the propulsion bay"
+            );
+        }
+
+        #[test]
+        fn a_wrapper_variant_forwards_the_source_that_the_error_it_holds_reports() {
+            let error = PropulsionBay::new(PropulsionBayDraft { thruster_count: 3 })
+                .err()
+                .expect("An odd thruster count must be rejected");
+            let source = error
+                .source()
+                .expect("The wrapper variant must forward the source of the error it holds");
+
+            // The held error is displayed by the wrapper itself, so the chain must skip it
+            // and reach the error that it reports as its own source
+            assert_eq!(
+                source.downcast_ref::<OddThrusterCountError>(),
+                Some(&OddThrusterCountError),
+                "The source of the propulsion bay error must be the source of the parity error"
             );
         }
     }

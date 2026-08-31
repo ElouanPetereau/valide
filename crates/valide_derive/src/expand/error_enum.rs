@@ -4,7 +4,7 @@
 //! It emits one variant per finite field, which carries the rejected value.
 //! It emits one wrapper variant per nested variant of an enum, per final validation and per nested or custom field.
 //! A variant only exists when at least one field, one variant or one attribute can produce it.
-//! A wrapper variant reports the error it holds as its source.
+//! A wrapper variant is transparent, so it displays the error it holds and forwards the source of that error.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -250,7 +250,9 @@ fn display_body(intermediate_representation: &TypeIntermediateRepresentation) ->
 }
 
 /// Generate the body of the `source` function of the error enum of `intermediate_representation`.
-/// Only a wrapper variant holds an error, so only a wrapper variant reports a source.
+/// A variant that holds no error reports no source.
+/// A wrapper variant is transparent, so it forwards the source of the error it holds instead of that error itself.
+/// The wrapper already displays the message of that error, so a report that walks the chain prints each message once.
 fn source_body(intermediate_representation: &TypeIntermediateRepresentation) -> TokenStream {
     let mut arms = Vec::new();
     let plain_patterns: Vec<TokenStream> = intermediate_representation
@@ -263,7 +265,7 @@ fn source_body(intermediate_representation: &TypeIntermediateRepresentation) -> 
     }
     for wrapper_variant in intermediate_representation.wrapper_variants() {
         arms.push(quote! {
-            Self::#wrapper_variant(error) => ::core::option::Option::Some(error),
+            Self::#wrapper_variant(error) => ::core::error::Error::source(error),
         });
     }
     if arms.is_empty() {

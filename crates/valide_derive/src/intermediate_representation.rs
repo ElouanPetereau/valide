@@ -296,7 +296,7 @@ impl TypeIntermediateRepresentation {
     }
 
     /// Return the error type of every custom field of the validated type, in declaration order.
-    /// The generated error enum wraps such an error and reports it as its source.
+    /// The generated error enum wraps such an error and forwards the source that it reports.
     pub(crate) fn custom_error_types(&self) -> impl Iterator<Item = &Path> {
         self.fields.iter().filter_map(|field| match &field.rule {
             FieldRule::Custom { error_ty, .. } => Some(error_ty),

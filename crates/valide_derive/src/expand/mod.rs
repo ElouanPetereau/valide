@@ -145,7 +145,7 @@ impl<'ir> ExpansionContext<'ir> {
 
     /// Generate the assertion that every wrapped error type of the validated type implements [`Error`](core::error::Error).
     /// A final validation and a custom field both hand their error type to the generated error enum,
-    /// which reports such an error as its source, and that needs the trait.
+    /// which forwards the source of such an error, and that needs the trait.
     /// The span of the error type carries the diagnostic, so the compiler points at the attribute or at the marker.
     /// The generic parameters of the validated type reach the assertion function, which binds the ones the error type names.
     fn wrapped_error_assertions(&self) -> TokenStream {

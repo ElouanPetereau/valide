@@ -81,6 +81,7 @@ fn main() {
   The `Display` of a range variant names the field and the bounds only, and the `Display` of a finite variant names the field only.
   The rejected value stays in the variant, reachable through a match or through `Debug`.
   One wrapper variant exists per final validation, per fallible nested field and per custom field.
+  A wrapper variant is transparent, so it displays the error it holds and forwards the source of that error.
 - The `TryFrom` of the draft and the `new` constructor, the two validated entry points.
   When using the [`serde`](https://docs.rs/serde/latest/serde/) crate, write `#[serde(try_from = "TypeDraft")]` on the type so the whole validation also guards deserialization.
 - The getters.
@@ -184,4 +185,4 @@ Forward another representation with `#[draft_attr(serde(...))]`.
     The derive rejects a proper subset with an error at each unused parameter. Remove that parameter, use it as the type of a range or finite field, nest it in a validated field, or name it in a final validation error.
 - Every range field type and every finite field type must implement `Clone`, `PartialEq` and `Debug`, which the error enum derives.
   The variant of a range field holds the two bounds and a clone of the rejected value, and the variant of a finite field holds a clone of the rejected value.
-- A parameter inside the error enum needs `'static`, `Debug` and `Display` bounds, and `Patch` needs `Clone`.
+- A parameter inside the error enum needs `Debug` and `Display` bounds, and `Patch` needs `Clone`.
