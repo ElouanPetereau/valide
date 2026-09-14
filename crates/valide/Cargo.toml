@@ -2,9 +2,14 @@
 name = "valide"
 version.workspace = true
 edition.workspace = true
+description = "A crate for types that can only be built through a validation, with validated setters to patch them."
+readme = "../../README.md"
+repository = "https://github.com/ElouanPetereau/valide"
+license = "MIT"
+publish = ["crates-io"]
 
 [dependencies]
-valide_derive = { path = "../valide_derive", default-features = false, optional = true }
+valide_derive = { path = "../valide_derive", version = "=0.1.0", default-features = false, optional = true }
 
 [dev-dependencies]
 nalgebra = { version = "0.34.0", default-features = false, features = ["std"] }

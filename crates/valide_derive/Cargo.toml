@@ -2,6 +2,11 @@
 name = "valide_derive"
 version.workspace = true
 edition.workspace = true
+description = "Derive macros that generate the validation code of the `valide` crate."
+readme = "../../README.md"
+repository = "https://github.com/ElouanPetereau/valide"
+license = "MIT"
+publish = ["crates-io"]
 
 [lib]
 proc-macro = true
