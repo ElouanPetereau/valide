@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../OVERVIEW.md")]
+#![doc = include_str!("../README.md")]
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(
     feature = "derive",

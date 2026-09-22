@@ -17,7 +17,7 @@ Two derive macros (`Validate` and `Patch`) generate that machinery, so a type de
 ---
 
 You may be looking for:
-- [An overview of valide](./OVERVIEW.md)
+- [An overview of valide](./crates/valide/README.md)
 - [Complete Examples](./crates/valide/examples/)
 
 ## Example
