@@ -1,9 +1,11 @@
 # Valide
 
-[![Build Status]][actions]
+[![Build Status]][actions] [![Latest Version]][crates.io]
 
 [Build Status]: https://img.shields.io/github/actions/workflow/status/ElouanPETEREAU/valide/ci.yml?branch=main
 [actions]: https://github.com/ElouanPETEREAU/valide/actions?query=branch%3Amain
+[Latest Version]: https://img.shields.io/crates/v/valide.svg
+[crates.io]: https://crates.io/crates/valide
 
 **A crate for types that can only be built through a validation, with validated setters to patch them.**
 
@@ -18,6 +20,8 @@ Two derive macros (`Validate` and `Patch`) generate that machinery, so a type de
 
 You may be looking for:
 - [An overview of valide](./crates/valide/README.md)
+- [API documentation](https://docs.rs/valide/latest/valide/)
+- [Releases note](https://github.com/ElouanPetereau/valide/releases)
 - [Complete Examples](./crates/valide/examples/)
 
 ## Example
