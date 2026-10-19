@@ -79,6 +79,7 @@ fn main() {
   Every range field gets its own variant, named after the field, such as `BusMassOutOfRange`.
   The variant carries the two evaluated bounds of the field and the value that the validation rejected.
   Every finite field also gets its own variant, named after the field, such as `AreaNotFinite`, which carries the value that the validation rejected.
+  For an `Option<T>` field the variant carries `T` values, never `Option<T>`.
   The `Display` of a range variant names the field and the bounds only, and the `Display` of a finite variant names the field only.
   The rejected value stays in the variant, reachable through a match or through `Debug`.
   One wrapper variant exists per final validation, per fallible nested field and per custom field.
@@ -115,6 +116,11 @@ Every field must also be private. A public field is a compilation error, because
 - `#[validate(finite)]` accepts a floating point value that is neither infinite nor a not a
   number value. The marker is meant for `f32` and `f64`. The generated check calls the
   `is_finite` method of the field type, which a trait bound can provide for a generic field.
+- `range` and `finite` also accept a field written as `Option<T>`.
+  A `None` value passes the check and a `Some` value is checked as a plain `T`, so the bounds are values of `T`, such as `#[validate(range(0.0..=5_000.0))] propellant_mass: Option<f64>`, and the error variant carries a `T`.
+  The draft field, the getter and the setter keep the `Option<T>`.
+  The derive reads the written type, so the last path segment must be `Option` with one type argument, whatever its path, and one level only is removed.
+  An `Option<Option<T>>` is rejected with an error.
 - `#[validate(nested)]` delegates the validation to the type of the field, which must implement
   `Validate`. The draft of the type holds the draft of the field.
   An `Option<T>` field also works when `T` implements `Validate`, because the crate implements `Validate` and `Patch` for every `Option<T>` whose `T` implements them.
@@ -181,6 +187,10 @@ Forward another representation with `#[draft_attr(serde(...))]`.
 - The by value getter uses the written token of the field type, so an alias to a primitive gets a getter that returns a reference.
 - `Validate::from_draft_unchecked` skips the validation. It exists for the generated code.
   A direct call on an invalid draft builds an invalid value.
+- The derive reads `Option` from the written type of a range field or a finite field.
+  A type alias of `Option<T>` is checked as a whole value, which fails to compile against bounds of type `T`.
+  A type called `Option` that is not the one of `core` is read as an `Option`, which fails to compile on the `Some` pattern of the check.
+  Neither case passes silently.
 - Generics are supported with some caveats
   - A generic type gets no inferred bounds.
     Declare every bound yourself, the macro copies the generics and the where clause verbatim onto every generated item, and a missing bound fails with the ordinary compiler error.

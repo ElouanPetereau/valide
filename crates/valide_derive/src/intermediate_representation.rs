@@ -42,11 +42,17 @@ pub(crate) enum FieldRule {
         upper: TokenStream,
         /// Variant of the generated error enum that carries the two evaluated bounds and the rejected value.
         error_variant: Ident,
+        /// Payload type of the field when its declared type is written as an `Option`.
+        /// The check then reads the payload under the `Some` pattern and the error variant carries this type.
+        inner_ty: Option<Type>,
     },
     /// The value must be a finite number.
     Finite {
         /// Variant of the generated error enum that carries the rejected value.
         error_variant: Ident,
+        /// Payload type of the field when its declared type is written as an `Option`.
+        /// The check then reads the payload under the `Some` pattern and the error variant carries this type.
+        inner_ty: Option<Type>,
     },
     /// The type of the field validates the value with its own `Validate` implementation.
     Nested {
@@ -88,7 +94,7 @@ impl FieldIntermediateRepresentation {
     /// A range field and a finite field each carry one, because each rejection comes from the field itself.
     pub(crate) fn own_variant(&self) -> Option<&Ident> {
         match &self.rule {
-            FieldRule::Range { error_variant, .. } | FieldRule::Finite { error_variant } => {
+            FieldRule::Range { error_variant, .. } | FieldRule::Finite { error_variant, .. } => {
                 Some(error_variant)
             }
             FieldRule::Nested { .. } | FieldRule::Custom { .. } | FieldRule::Skip => None,
@@ -145,6 +151,23 @@ impl FieldIntermediateRepresentation {
         };
 
         BY_VALUE_TYPES.iter().any(|name| ident == name)
+    }
+
+    /// Return the payload type of the field when its range check or its finite check reads the payload of an `Option`.
+    /// Return nothing for every other field, whose check reads the whole value.
+    pub(crate) fn option_payload_ty(&self) -> Option<&Type> {
+        match &self.rule {
+            FieldRule::Range { inner_ty, .. } | FieldRule::Finite { inner_ty, .. } => {
+                inner_ty.as_ref()
+            }
+            FieldRule::Nested { .. } | FieldRule::Custom { .. } | FieldRule::Skip => None,
+        }
+    }
+
+    /// Return the type that the range check or the finite check of the field reads and that its error variant carries.
+    /// The payload type of an `Option` field, or the declared type of every other field.
+    pub(crate) fn checked_ty(&self) -> &Type {
+        self.option_payload_ty().unwrap_or(&self.ty)
     }
 
     /// Build the identifier `prefix` plus the logical name of the field, with the span of the field.

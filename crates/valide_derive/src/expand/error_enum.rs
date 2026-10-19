@@ -2,6 +2,7 @@
 //!
 //! The generator emits one variant per range field, which carries the two evaluated bounds of the field and the rejected value.
 //! It emits one variant per finite field, which carries the rejected value.
+//! The variant of a field written as an `Option` carries the payload type.
 //! It emits one wrapper variant per nested variant of an enum, per final validation and per nested or custom field.
 //! A variant only exists when at least one field, one variant or one attribute can produce it.
 //! A wrapper variant is transparent, so it displays the error it holds and forwards the source of that error.
@@ -32,7 +33,7 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
         .fields
         .iter()
         .filter_map(|field| {
-            let ty = &field.ty;
+            let ty = field.checked_ty();
             let value_doc = doc("Value that the validation rejected.");
 
             match &field.rule {
@@ -56,7 +57,7 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
                         },
                     })
                 }
-                FieldRule::Finite { error_variant } => {
+                FieldRule::Finite { error_variant, .. } => {
                     let variant_doc = doc(&format!(
                         "The value of the `{}` field is not a finite number.",
                         field.logical_name
@@ -222,7 +223,7 @@ fn display_body(intermediate_representation: &TypeIntermediateRepresentation) ->
                     }
                 });
             }
-            FieldRule::Finite { error_variant } => {
+            FieldRule::Finite { error_variant, .. } => {
                 let field_text = format!("{} must be a finite number", field.logical_name);
 
                 arms.push(quote! {

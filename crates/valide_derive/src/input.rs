@@ -9,9 +9,10 @@ use core::ptr;
 use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
 use quote::{ToTokens as _, quote};
 use syn::{
-    Attribute, Data, DataStruct, DeriveInput, Error, Expr, ExprRange, Field, Fields, GenericParam,
-    Generics, Ident, Index, Member, Meta, MetaList, Path, RangeLimits, Result, Token, Variant,
-    Visibility, parse::ParseStream, punctuated::Punctuated, spanned::Spanned as _,
+    Attribute, Data, DataStruct, DeriveInput, Error, Expr, ExprRange, Field, Fields,
+    GenericArgument, GenericParam, Generics, Ident, Index, Member, Meta, MetaList, Path,
+    PathArguments, RangeLimits, Result, Token, Type, Variant, Visibility, parse::ParseStream,
+    punctuated::Punctuated, spanned::Spanned as _,
 };
 
 use crate::{
@@ -55,6 +56,8 @@ const EXCLUDED_BOUND: &str = "Excluded";
 const UNBOUNDED_BOUND: &str = "Unbounded";
 /// Logical name of the single field of a newtype.
 const NEWTYPE_LOGICAL_NAME: &str = "value";
+/// Name of the type whose payload a range check and a finite check read under the `Some` pattern.
+const OPTION_TYPE: &str = "Option";
 /// Message that describes the markers of a field.
 const MARKER_MESSAGE: &str = "a field needs exactly one #[validate(...)] marker among range(...), finite, nested, custom(...) and skip";
 /// Message of the rejection of a field that carries a visibility keyword.
@@ -82,6 +85,11 @@ const RANGE_MESSAGE: &str =
 /// Message that describes the accepted bounds of the bound pair form.
 const BOUND_MESSAGE: &str =
     "a bound must be Bound::Included(value), Bound::Excluded(value) or Bound::Unbounded";
+/// Message of the rejection of a range field or a finite field written as an `Option` that carries no single type argument.
+const OPTION_ARGUMENT_MESSAGE: &str = "a range or finite field written as an Option must carry exactly one type argument, such as Option<f64>";
+/// Message of the rejection of a range field or a finite field written as an `Option` of an `Option`.
+const OPTION_OF_OPTION_MESSAGE: &str =
+    "a range or finite check reads one Option level only, so Option<Option<T>> is rejected";
 /// Message that describes the arguments of a `custom` marker.
 const CUSTOM_MESSAGE: &str =
     "#[validate(custom(...))] must be written #[validate(custom(fn, error = Type))]";
@@ -313,7 +321,7 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
         return Err(Error::new_spanned(extra_marker, MARKER_MESSAGE));
     }
 
-    let rule = parse_field_marker(marker, &logical_name, name_span)?;
+    let rule = parse_field_marker(marker, &field.ty, &logical_name, name_span)?;
 
     Ok(FieldIntermediateRepresentation {
         member,
@@ -326,9 +334,11 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
 }
 
 /// Parse the single marker of the given `validate` `attribute` into the rule of a field.
+/// The declared type of the field is `ty`.
 /// The field is called `logical_name`, with the name span `name_span`.
 fn parse_field_marker(
     attribute: &Attribute,
+    ty: &Type,
     logical_name: &str,
     name_span: Span,
 ) -> Result<FieldRule> {
@@ -343,7 +353,7 @@ fn parse_field_marker(
 
     if let Meta::List(list) = &marker {
         if list.path.is_ident(RANGE_MARKER) {
-            return parse_field_range(list, logical_name, name_span);
+            return parse_field_range(list, ty, logical_name, name_span);
         }
         if list.path.is_ident(CUSTOM_MARKER) {
             return parse_field_custom(list, logical_name, name_span);
@@ -357,6 +367,7 @@ fn parse_field_marker(
     if path.is_ident(FINITE_MARKER) {
         return Ok(FieldRule::Finite {
             error_variant: naming::not_finite_variant(logical_name, name_span)?,
+            inner_ty: option_payload_type(ty)?,
         });
     }
     if path.is_ident(NESTED_MARKER) {
@@ -412,10 +423,17 @@ impl BoundKind<'_> {
 }
 
 /// Parse the arguments of the given `range` marker `list` into the rule of a field.
+/// The declared type of the field is `ty`.
 /// The field is called `logical_name`, with the name span `name_span`, which builds the error enum variant.
 /// The sugared form and the bound pair form both land on the same two bound expressions.
-fn parse_field_range(list: &MetaList, logical_name: &str, name_span: Span) -> Result<FieldRule> {
+fn parse_field_range(
+    list: &MetaList,
+    ty: &Type,
+    logical_name: &str,
+    name_span: Span,
+) -> Result<FieldRule> {
     let error_variant = naming::range_variant(logical_name, name_span)?;
+    let inner_ty = option_payload_type(ty)?;
     let arguments = list.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
     let mut argument_iterator = arguments.iter();
     let bounds = (
@@ -434,6 +452,7 @@ fn parse_field_range(list: &MetaList, logical_name: &str, name_span: Span) -> Re
             lower: lower.expression(),
             upper: upper.expression(),
             error_variant,
+            inner_ty,
         });
     }
     if let (Some(lower), Some(upper), None) = bounds {
@@ -441,6 +460,7 @@ fn parse_field_range(list: &MetaList, logical_name: &str, name_span: Span) -> Re
             lower: parse_bound(lower)?.expression(),
             upper: parse_bound(upper)?.expression(),
             error_variant,
+            inner_ty,
         });
     }
 
@@ -502,6 +522,44 @@ fn last_segment_is(path: &Path, segment_name: &str) -> bool {
     };
 
     last_segment.ident == segment_name
+}
+
+/// Return the payload type of the given `ty` when it is written as an `Option` of one type, or nothing otherwise.
+/// A range check and a finite check read the payload under the `Some` pattern, so a `None` value passes them.
+/// The last segment of the path carries the meaning, so the function accepts every spelling of `Option`,
+/// such as `Option<T>`, `core::option::Option<T>` and `::std::option::Option<T>`.
+/// It reads the written type only. A type alias of an `Option` is no `Option` here and a type called `Option` always is,
+/// and the generated check names the absolute `Some` pattern, so the compiler rejects both.
+/// A segment called `Option` that carries no single type argument is an error, as is an `Option` of an `Option`,
+/// because the check removes one level only.
+fn option_payload_type(ty: &Type) -> Result<Option<Type>> {
+    let Type::Path(path_type) = ty else {
+        return Ok(None);
+    };
+    // A qualified path names an associated type, which no written `Option` reaches
+    if path_type.qself.is_some() {
+        return Ok(None);
+    }
+    let Some(last_segment) = path_type.path.segments.last() else {
+        return Ok(None);
+    };
+    if last_segment.ident != OPTION_TYPE {
+        return Ok(None);
+    }
+    let PathArguments::AngleBracketed(arguments) = &last_segment.arguments else {
+        return Err(Error::new_spanned(ty, OPTION_ARGUMENT_MESSAGE));
+    };
+    let mut argument_iterator = arguments.args.iter();
+    let (Some(GenericArgument::Type(payload_type)), None) =
+        (argument_iterator.next(), argument_iterator.next())
+    else {
+        return Err(Error::new_spanned(ty, OPTION_ARGUMENT_MESSAGE));
+    };
+    if option_payload_type(payload_type)?.is_some() {
+        return Err(Error::new_spanned(ty, OPTION_OF_OPTION_MESSAGE));
+    }
+
+    Ok(Some(payload_type.clone()))
 }
 
 /// Parse the given `variant` of a validated enum into its representation.
@@ -730,6 +788,7 @@ fn used_error_parameters<'generics>(
 /// Return the tokens of every type that reaches the generated error enum of a validated type.
 /// A range field contributes its declared type, which the variant of the field carries twice as a bound and once as the rejected value.
 /// A finite field contributes its declared type, which the variant of the field carries once as the rejected value.
+/// An `Option` field contributes its whole declared type, which names the same parameters as its payload.
 /// A nested field contributes its declared type, whose own error the enum wraps.
 /// A nested variant payload contributes its declared type the same way.
 /// A custom field contributes the error type that its function returns.
@@ -911,13 +970,14 @@ fn check_error_enum_variants(
 mod tests {
     use proc_macro2::{Ident, Span, TokenStream};
     use quote::{ToTokens as _, quote};
-    use syn::{DeriveInput, Generics, Member, parse_str};
+    use syn::{DeriveInput, Generics, Member, Type, parse_str};
 
     use crate::{
         input::{
-            CUSTOM_MESSAGE, ERROR_PAYLOAD_SUBSET_MESSAGE, MARKER_MESSAGE, PAYLOAD_MARKER_MESSAGE,
-            PRIVATE_FIELD_MESSAGE, RANGE_MESSAGE, UNION_MESSAGE, VARIANT_MARKER_MESSAGE,
-            VARIANT_SHAPE_MESSAGE, parameter_name, parse, used_error_parameters,
+            CUSTOM_MESSAGE, ERROR_PAYLOAD_SUBSET_MESSAGE, MARKER_MESSAGE, OPTION_ARGUMENT_MESSAGE,
+            OPTION_OF_OPTION_MESSAGE, PAYLOAD_MARKER_MESSAGE, PRIVATE_FIELD_MESSAGE, RANGE_MESSAGE,
+            UNION_MESSAGE, VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE, option_payload_type,
+            parameter_name, parse, used_error_parameters,
         },
         intermediate_representation::{
             FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
@@ -942,6 +1002,7 @@ mod tests {
                 lower: quote! { ::core::ops::Bound::Unbounded },
                 upper: quote! { ::core::ops::Bound::Unbounded },
                 error_variant: ident("ValueOutOfRange"),
+                inner_ty: None,
             },
         }
     }
@@ -956,6 +1017,7 @@ mod tests {
             passthrough: Vec::new(),
             rule: FieldRule::Finite {
                 error_variant: ident("ValueNotFinite"),
+                inner_ty: None,
             },
         }
     }
@@ -1029,6 +1091,28 @@ mod tests {
     /// Return the text of the given `tokens` with every space removed.
     fn token_text(tokens: &TokenStream) -> String {
         tokens.to_string().split_whitespace().collect()
+    }
+
+    /// Return the token text of the payload that the type written `declared_type` carries as an `Option`.
+    /// Return nothing when the written type is no `Option`.
+    /// The written type must parse and the detection must accept it.
+    fn detected_payload(declared_type: &str) -> Option<String> {
+        let parsed_type: Type = parse_str(declared_type).expect("the tested field type must parse");
+
+        option_payload_type(&parsed_type)
+            .expect("the tested field type must be accepted")
+            .map(|payload_type| token_text(&payload_type.to_token_stream()))
+    }
+
+    /// Return the message of the rejection that the type written `declared_type` gets from the detection of an `Option`.
+    /// The written type must parse and the detection must reject it.
+    fn rejected_payload(declared_type: &str) -> String {
+        let parsed_type: Type = parse_str(declared_type).expect("the tested field type must parse");
+        let Err(error) = option_payload_type(&parsed_type) else {
+            panic!("the tested field type must be rejected");
+        };
+
+        error.to_string()
     }
 
     /// Return the messages of the rejections that the parsing of `source` produces.
@@ -1633,7 +1717,7 @@ mod tests {
             .fields
             .first()
             .expect("the accepted struct must carry its single field");
-        let FieldRule::Finite { error_variant } = &field.rule else {
+        let FieldRule::Finite { error_variant, .. } = &field.rule else {
             panic!("the finite marker must give a finite rule");
         };
 
@@ -1679,6 +1763,147 @@ mod tests {
                 "the same `SunShadowNotFinite` variant also comes from here".to_owned(),
             ],
             "Two finite fields whose names give the same error variant must be rejected"
+        );
+    }
+
+    #[test]
+    fn every_spelling_of_an_option_gives_its_payload() {
+        for (declared_type, expected_payload) in [
+            ("Option<f64>", "f64"),
+            ("core::option::Option<f64>", "f64"),
+            ("::std::option::Option<Vec<u8>>", "Vec<u8>"),
+            ("Option::<f64>", "f64"),
+        ] {
+            assert_eq!(
+                detected_payload(declared_type),
+                Some(expected_payload.to_owned()),
+                "The written type {declared_type} must give its payload {expected_payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_type_that_is_no_option_gives_no_payload() {
+        for declared_type in [
+            "f64",
+            "Vec<Option<f64>>",
+            "&Option<f64>",
+            "(Option<f64>,)",
+            "<Wrapper as Trait>::Option<f64>",
+        ] {
+            assert_eq!(
+                detected_payload(declared_type),
+                None,
+                "The written type {declared_type} is no Option, so it must give no payload"
+            );
+        }
+    }
+
+    #[test]
+    fn an_option_without_a_single_type_argument_is_rejected() {
+        for declared_type in ["Option", "Option<f64, u8>", "Option<'static>", "Option<3>"] {
+            assert_eq!(
+                rejected_payload(declared_type),
+                OPTION_ARGUMENT_MESSAGE,
+                "The written type {declared_type} carries no single type argument, so it must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn an_option_of_an_option_is_rejected() {
+        for declared_type in ["Option<Option<f64>>", "Option<core::option::Option<f64>>"] {
+            assert_eq!(
+                rejected_payload(declared_type),
+                OPTION_OF_OPTION_MESSAGE,
+                "The written type {declared_type} nests two Option levels, so it must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_range_field_written_as_an_option_carries_its_payload_type() {
+        let intermediate_representation =
+            accepted("struct Probe { #[validate(range(0.0..=1.0))] mass: Option<f64> }");
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+        let FieldRule::Range { inner_ty, .. } = &field.rule else {
+            panic!("the range marker must give a range rule");
+        };
+
+        assert_eq!(
+            inner_ty
+                .as_ref()
+                .map(|payload_type| token_text(&payload_type.to_token_stream())),
+            Some("f64".to_owned()),
+            "The rule must carry the payload type of the Option field"
+        );
+    }
+
+    #[test]
+    fn a_finite_field_written_as_an_option_carries_its_payload_type() {
+        let intermediate_representation =
+            accepted("struct Probe { #[validate(finite)] drag_coefficient: Option<f64> }");
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+        let FieldRule::Finite { inner_ty, .. } = &field.rule else {
+            panic!("the finite marker must give a finite rule");
+        };
+
+        assert_eq!(
+            inner_ty
+                .as_ref()
+                .map(|payload_type| token_text(&payload_type.to_token_stream())),
+            Some("f64".to_owned()),
+            "The rule must carry the payload type of the Option field"
+        );
+    }
+
+    #[test]
+    fn a_range_field_written_as_an_option_of_an_option_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "struct Probe { #[validate(range(0.0..=1.0))] mass: Option<Option<f64>> }"
+            ),
+            vec![OPTION_OF_OPTION_MESSAGE.to_owned()],
+            "A range field that nests two Option levels must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_nested_field_written_as_an_option_keeps_its_declared_type() {
+        let intermediate_representation =
+            accepted("struct Probe { #[validate(nested)] shadow: Option<Fraction> }");
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+
+        assert!(
+            matches!(field.rule, FieldRule::Nested { .. }),
+            "The nested marker must give a nested rule"
+        );
+        assert_eq!(
+            token_text(&field.ty.to_token_stream()),
+            "Option<Fraction>",
+            "A nested field must keep its whole declared type, which the blanket implementation of Option validates"
+        );
+    }
+
+    #[test]
+    fn a_parameter_inside_an_option_range_field_type_makes_the_error_enum_generic() {
+        let intermediate_representation = accepted(
+            "struct Panel<Number> { #[validate(range(Number::ZERO..=Number::ONE))] \
+             area: Option<Number> }",
+        );
+
+        assert!(
+            intermediate_representation.error_enum_is_generic,
+            "A range on an Option of a generic parameter must make the error enum generic"
         );
     }
 }

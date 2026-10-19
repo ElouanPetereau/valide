@@ -1,0 +1,5 @@
+error: a range or finite check reads one Option level only, so Option<Option<T>> is rejected
+ --> tests/ui/fail/option_of_option.rs:6:12
+  |
+6 |     value: Option<Option<f64>>,
+  |            ^^^^^^^^^^^^^^^^^^^

@@ -5,6 +5,7 @@
 //! For enums, the aggregate matches the draft variant and delegates to the payload of the variant,
 //! It emits no standalone validator, because delegation is the only rule that a variant carries.
 //! The aggregate stops at the first error found.
+//! A range field or a finite field whose declared type is an `Option` runs its check on the payload under the `Some` pattern, so a `None` value passes.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -143,42 +144,52 @@ fn field_validator(
     let body = match &field.rule {
         // The early return above already handled this rule
         FieldRule::Skip => return None,
-        // The two bounds are values of the declared type of the field,
+        // The two bounds are values of the checked type of the field,
         // so the check reads them by reference and the rejection moves them into the error
         FieldRule::Range {
             lower,
             upper,
             error_variant,
+            ..
         } => {
-            let ty = &field.ty;
+            let ty = field.checked_ty();
+            let checked = checked_place(field);
 
-            quote! {
-                let lower: ::core::ops::Bound<#ty> = #lower;
-                let upper: ::core::ops::Bound<#ty> = #upper;
-                if !::core::ops::RangeBounds::contains(
-                    &(
-                        ::core::ops::Bound::as_ref(&lower),
-                        ::core::ops::Bound::as_ref(&upper),
-                    ),
-                    &self.#member,
-                ) {
-                    return ::core::result::Result::Err(#error_ident::#error_variant {
-                        lower,
-                        upper,
-                        value: ::core::clone::Clone::clone(&self.#member),
-                    });
-                }
-            }
+            optional_check(
+                field,
+                quote! {
+                    let lower: ::core::ops::Bound<#ty> = #lower;
+                    let upper: ::core::ops::Bound<#ty> = #upper;
+                    if !::core::ops::RangeBounds::contains(
+                        &(
+                            ::core::ops::Bound::as_ref(&lower),
+                            ::core::ops::Bound::as_ref(&upper),
+                        ),
+                        &#checked,
+                    ) {
+                        return ::core::result::Result::Err(#error_ident::#error_variant {
+                            lower,
+                            upper,
+                            value: ::core::clone::Clone::clone(&#checked),
+                        });
+                    }
+                },
+            )
         }
         // The check calls the unqualified function, so a generic field reads it from the bound of its own type
-        FieldRule::Finite { error_variant } => {
-            quote! {
-                if !self.#member.is_finite() {
-                    return ::core::result::Result::Err(#error_ident::#error_variant {
-                        value: ::core::clone::Clone::clone(&self.#member),
-                    });
-                }
-            }
+        FieldRule::Finite { error_variant, .. } => {
+            let checked = checked_place(field);
+
+            optional_check(
+                field,
+                quote! {
+                    if !#checked.is_finite() {
+                        return ::core::result::Result::Err(#error_ident::#error_variant {
+                            value: ::core::clone::Clone::clone(&#checked),
+                        });
+                    }
+                },
+            )
         }
         FieldRule::Nested { wrapper_variant } => {
             let ty = &field.ty;
@@ -220,4 +231,32 @@ fn field_validator(
             ::core::result::Result::Ok(())
         }
     })
+}
+
+/// Return the place expression that the range check or the finite check of the `field` reads.
+/// The payload of an `Option` field comes through the `value` reference of the `Some` pattern,
+/// so the place dereferences it and every method call resolves as it does on the field itself.
+/// Every other field is read on `self`.
+fn checked_place(field: &FieldIntermediateRepresentation) -> TokenStream {
+    if field.option_payload_ty().is_some() {
+        return quote! { (*value) };
+    }
+    let member = &field.member;
+
+    quote! { self.#member }
+}
+
+/// Wrap the given `check` of the `field` under the `Some` pattern when the declared type of the field is an `Option`.
+/// A `None` value then runs no check at all. Every other field gets its check back untouched.
+fn optional_check(field: &FieldIntermediateRepresentation, check: TokenStream) -> TokenStream {
+    if field.option_payload_ty().is_none() {
+        return check;
+    }
+    let member = &field.member;
+
+    quote! {
+        if let ::core::option::Option::Some(value) = &self.#member {
+            #check
+        }
+    }
 }

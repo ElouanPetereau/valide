@@ -2593,4 +2593,66 @@ mod tests {
             );
         }
     }
+
+    /// Optional fields of a generic type whose parameter carries the two float traits of the model.
+    mod optional_fields {
+        use core::ops::Bound;
+
+        use nalgebra::RealField;
+        use num_traits::Float;
+
+        /// Panel whose two measurements are optional, generic over the precision.
+        #[derive(valide_derive::Validate)]
+        struct Panel<Type: RealField + Float> {
+            /// Area in square meters, absent before deployment.
+            #[validate(range(Bound::Excluded(Type::zero()), Bound::Excluded(Type::infinity())))]
+            area: Option<Type>,
+            /// Tilt in radians, absent before deployment.
+            #[validate(finite)]
+            tilt: Option<Type>,
+        }
+
+        #[test]
+        fn a_generic_option_payload_is_checked_at_single_precision() {
+            assert_eq!(
+                Panel::<f32>::new(PanelDraft {
+                    area: Some(f32::INFINITY),
+                    tilt: None,
+                })
+                .err(),
+                Some(PanelValidationError::AreaOutOfRange {
+                    lower: Bound::Excluded(0.0),
+                    upper: Bound::Excluded(f32::INFINITY),
+                    value: f32::INFINITY,
+                }),
+                "An infinite area must be rejected with the single precision bounds of the payload"
+            );
+
+            // A not a number value equals no value at all, so the rejection cannot be compared
+            let error = Panel::<f32>::new(PanelDraft {
+                area: None,
+                tilt: Some(f32::NAN),
+            })
+            .err()
+            .expect("A not a number tilt must be rejected");
+            let PanelValidationError::TiltNotFinite { value } = error else {
+                panic!("The rejection must be the finite variant of the tilt field");
+            };
+            assert!(
+                value.is_nan(),
+                "The rejection must carry the not a number payload that it rejected"
+            );
+
+            let panel = Panel::<f32>::new(PanelDraft {
+                area: None,
+                tilt: None,
+            })
+            .expect("A panel whose two measurements hold nothing must build");
+            assert_eq!(
+                (panel.area(), panel.tilt()),
+                (&None, &None),
+                "A panel built without a measurement must hold nothing"
+            );
+        }
+    }
 }
