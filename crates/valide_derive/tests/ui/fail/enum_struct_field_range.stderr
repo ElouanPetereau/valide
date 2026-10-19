@@ -1,0 +1,5 @@
+error: a variant payload or a struct variant field needs exactly one #[validate(...)] marker among nested and skip, because a public variant constructor bypasses every rule of the enum, so a range, finite or custom rule belongs in a validated payload type
+ --> tests/ui/fail/enum_struct_field_range.rs:7:20
+  |
+7 |         #[validate(range(0.0..=1.0))]
+  |                    ^^^^^^^^^^^^^^^^

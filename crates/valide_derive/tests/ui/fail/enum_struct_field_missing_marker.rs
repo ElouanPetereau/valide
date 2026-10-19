@@ -1,4 +1,4 @@
-//! An enum variant with named fields, which the macros do not support.
+//! A struct variant field without a marker, which the grammar rejects like a payload without a marker.
 
 #[derive(valide_derive::Validate)]
 enum Command {

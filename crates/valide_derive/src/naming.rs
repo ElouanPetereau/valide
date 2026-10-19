@@ -67,6 +67,24 @@ pub(crate) fn nested_wrapper_variant(logical_name: &str, span: Span) -> Result<I
     pascal_case_ident(logical_name, VALIDATION_ERROR_SUFFIX, span)
 }
 
+/// Build the wrapper variant of the nested field `field_name` of the struct variant `variant_name`, with the span `span`.
+/// The variant comes first, so two variants that share a field name build two distinct wrappers.
+/// The field part must build an identifier on its own, so a field whose Pascal case spelling is empty is rejected like a struct field.
+/// Return an error when either part builds no identifier.
+pub(crate) fn variant_field_wrapper_variant(
+    variant_name: &str,
+    field_name: &str,
+    span: Span,
+) -> Result<Ident> {
+    let field_part = pascal_case_ident(field_name, "", span)?;
+
+    pascal_case_ident(
+        &format!("{}_{field_part}", plain_name(variant_name)),
+        VALIDATION_ERROR_SUFFIX,
+        span,
+    )
+}
+
 /// Build the wrapper variant of the final validation `function_name`, with the span `span`.
 /// Return an error when the name builds no identifier.
 pub(crate) fn final_validation_wrapper_variant(function_name: &str, span: Span) -> Result<Ident> {
@@ -120,6 +138,7 @@ mod tests {
     use crate::naming::{
         DRAFT_SUFFIX, final_validation_wrapper_variant, first_collision, nested_wrapper_variant,
         not_finite_variant, range_variant, suffixed_ident, to_pascal_case,
+        variant_field_wrapper_variant,
     };
 
     /// Build an identifier from `name`, with the call site span.
@@ -239,6 +258,45 @@ mod tests {
             )),
             "SunShadowFractionValidationError",
             "A nested field must give its Pascal case name followed by the error suffix"
+        );
+    }
+
+    #[test]
+    fn variant_field_wrapper_variant_joins_the_variant_and_the_field() {
+        assert_eq!(
+            variant_name(variant_field_wrapper_variant(
+                "Custom",
+                "body",
+                Span::call_site()
+            )),
+            "CustomBodyValidationError",
+            "A struct variant field must give the variant name, its Pascal case name and the error suffix"
+        );
+        assert_eq!(
+            variant_name(variant_field_wrapper_variant(
+                "SunPointing",
+                "r#type",
+                Span::call_site()
+            )),
+            "SunPointingTypeValidationError",
+            "A raw identifier field must give the wrapper of its plain name"
+        );
+        assert_eq!(
+            variant_name(variant_field_wrapper_variant(
+                "Custom",
+                "sun_shadow",
+                Span::call_site()
+            )),
+            "CustomSunShadowValidationError",
+            "Every underscore separated word of the field must be capitalized and joined"
+        );
+        assert!(
+            variant_field_wrapper_variant("Custom", "__", Span::call_site()).is_err(),
+            "A field with an empty Pascal case spelling must be rejected"
+        );
+        assert!(
+            variant_field_wrapper_variant("Custom", "_1", Span::call_site()).is_err(),
+            "A field whose Pascal case spelling starts with a digit must be rejected"
         );
     }
 

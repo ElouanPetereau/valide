@@ -3,7 +3,7 @@
 //! The generator emits one variant per range field, which carries the two evaluated bounds of the field and the rejected value.
 //! It emits one variant per finite field, which carries the rejected value.
 //! The variant of a field written as an `Option` carries the payload type.
-//! It emits one wrapper variant per nested variant of an enum, per final validation and per nested or custom field.
+//! It emits one wrapper variant per nested payload of an enum, which a struct variant holds once per nested field, per final validation and per nested or custom field.
 //! A variant only exists when at least one field, one variant or one attribute can produce it.
 //! A wrapper variant is transparent, so it displays the error it holds and forwards the source of that error.
 
@@ -12,7 +12,9 @@ use quote::quote;
 
 use crate::{
     expand::{ExpansionContext, doc, validate_trait},
-    intermediate_representation::{FieldRule, TypeIntermediateRepresentation},
+    intermediate_representation::{
+        FieldRule, TypeIntermediateRepresentation, VariantIntermediateRepresentation, VariantKind,
+    },
 };
 
 /// Generate the validation error enum of the validated type of `context`, with its [`Display`](core::fmt::Display) and its [`Error`](core::error::Error).
@@ -78,19 +80,7 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
     let variant_wrappers = intermediate_representation
         .variants
         .iter()
-        .filter_map(|variant| {
-            let (payload_type, wrapper_variant) = variant.nested_payload()?;
-            let validate = validate_trait();
-            let variant_doc = doc(&format!(
-                "The validation of the `{}` variant failed.",
-                variant.ident
-            ));
-
-            Some(quote! {
-                #variant_doc
-                #wrapper_variant(<#payload_type as #validate>::Error),
-            })
-        });
+        .flat_map(nested_variant_wrappers);
     let final_wrappers =
         intermediate_representation
             .final_validations
@@ -203,6 +193,46 @@ fn implementation_generics(context: &ExpansionContext<'_>) -> (TokenStream, Toke
     let where_clause = context.where_clause();
 
     (quote! { #impl_generics }, quote! { #where_clause })
+}
+
+/// Generate the wrapper variants of the given `variant`, one per nested payload, in declaration order.
+/// The wrapper of a tuple payload documents the variant and the wrapper of a struct variant field documents the field too.
+fn nested_variant_wrappers(variant: &VariantIntermediateRepresentation) -> Vec<TokenStream> {
+    let variant_ident = &variant.ident;
+    let validate = validate_trait();
+
+    match &variant.kind {
+        VariantKind::Unit => Vec::new(),
+        VariantKind::Payload { .. } => variant
+            .nested_payload()
+            .map(|(payload_type, wrapper_variant)| {
+                let variant_doc = doc(&format!(
+                    "The validation of the `{variant_ident}` variant failed."
+                ));
+
+                quote! {
+                    #variant_doc
+                    #wrapper_variant(<#payload_type as #validate>::Error),
+                }
+            })
+            .into_iter()
+            .collect(),
+        VariantKind::Struct { fields } => fields
+            .iter()
+            .filter_map(|field| {
+                let (field_type, wrapper_variant) = field.nested_payload()?;
+                let variant_doc = doc(&format!(
+                    "The validation of the `{}` field of the `{variant_ident}` variant failed.",
+                    field.logical_name
+                ));
+
+                Some(quote! {
+                    #variant_doc
+                    #wrapper_variant(<#field_type as #validate>::Error),
+                })
+            })
+            .collect(),
+    }
 }
 
 /// Generate the body of the [`Display`](core::fmt::Display) implementation of the error enum of `intermediate_representation`.

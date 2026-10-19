@@ -169,12 +169,16 @@ the error enum is `ValueOutOfRange` and its finite variant is `ValueNotFinite`.
 
 ### Enums
 
-An enum is supported. A variant is a unit variant, or a tuple variant with exactly one payload that carries the marker, such as `Custom(#[validate(nested)] CelestialBody)`.
-A payload can also be an `Option<T>`, such as `Body(#[validate(nested)] Option<CelestialBody>)`, which passes when it holds nothing.
-A payload accepts `nested` and `skip` only.
-The enum declares no rule of its own, so every rule lives in the payload type and a public variant constructor bypasses nothing.
+An enum is supported. A variant is a unit variant, a tuple variant with exactly one payload that carries the marker, such as `Custom(#[validate(nested)] CelestialBody)`, or a struct variant whose every field carries a marker, such as `Custom { #[validate(nested)] body: CelestialBody, #[validate(skip)] label: String }`.
+A struct variant may carry no field at all, such as `SunPointing {}`. The draft keeps the braces, so the draft variant stays a struct variant and `#[draft_attr(serde(deny_unknown_fields))]` applies to it, which serde never does for a unit variant.
+Clippy reports such a variant through `empty_enum_variants_with_brackets` when that lint is enabled.
+A payload can also be an `Option<T>`, such as `Body(#[validate(nested)] Option<CelestialBody>)` or `Orbit { #[validate(nested)] body: Option<CelestialBody> }`, which passes when it holds nothing.
+A payload and a struct variant field accept `nested` and `skip` only.
+The enum declares no rule of its own, so every rule lives in the payload type and a public variant constructor bypasses nothing. A `range`, `finite` or `custom` marker on a payload or on a struct variant field is rejected with an error that asks to move the rule into a validated payload type.
+The documentation, the serde attributes and the `draft_attr` payloads of a struct variant field reach the draft field, like the ones of a struct field.
 
-The error enum holds one wrapper variant per nested variant, named after the variant.
+The error enum holds one wrapper variant per nested payload. The wrapper of a tuple payload is named after the variant, such as `CustomValidationError`, and the wrapper of a struct variant field is named after the variant and the field, such as `CustomBodyValidationError` for `Custom { body }`.
+The validation of a struct variant checks its nested fields in declaration order and stops at the first error.
 An enum gets no getter, because a caller matches on the public variants.
 `Patch` generates no setter, because a patch of an enum replaces the whole variant, which `new` already validates.
 The draft enum takes the serde representation of serde itself, the external tagging.
@@ -182,7 +186,7 @@ Forward another representation with `#[draft_attr(serde(...))]`.
 
 ## Limitations
 
-- A validated type must be a struct or an enum, and a union is rejected with a clear error. A variant must be a unit variant or a tuple variant with exactly one `nested` or `skip` payload.
+- A validated type must be a struct or an enum, and a union is rejected with a clear error. A variant must be a unit variant, a tuple variant with exactly one `nested` or `skip` payload, or a struct variant whose fields are all `nested` or `skip`. A tuple variant with no payload or with several payloads is rejected.
 - A tuple struct must have exactly one field.
 - The by value getter uses the written token of the field type, so an alias to a primitive gets a getter that returns a reference.
 - `Validate::from_draft_unchecked` skips the validation. It exists for the generated code.

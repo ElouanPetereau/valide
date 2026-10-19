@@ -3,18 +3,19 @@
 //! For structs, the generator emits one field validator per validated field, so a caller can test the fields one by one.
 //! It emits the aggregate that runs them in declaration order, then runs every final validation.
 //! For enums, the aggregate matches the draft variant and delegates to the payload of the variant,
+//! or to each nested field of a struct variant in declaration order.
 //! It emits no standalone validator, because delegation is the only rule that a variant carries.
 //! The aggregate stops at the first error found.
 //! A range field or a finite field whose declared type is an `Option` runs its check on the payload under the `Some` pattern, so a `None` value passes.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
 use crate::{
     expand::{ExpansionContext, doc, validate_trait},
     intermediate_representation::{
         FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
-        VariantKind,
+        VariantIntermediateRepresentation, VariantKind,
     },
 };
 
@@ -80,6 +81,7 @@ fn field_calls(intermediate_representation: &TypeIntermediateRepresentation) -> 
 /// Generate the match that validates the payload of the draft variant of the validated type of `context`.
 /// A nested variant delegates to the type of its payload and wraps the error that the type returns.
 /// Every variant that carries no rule shares a single arm, so no two arms of the match hold the same body.
+/// A struct variant with a nested field gets one arm that checks its nested fields in field order.
 /// Return an empty stream for an enum without a variant, which carries no payload to reach.
 fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
     let intermediate_representation = context.intermediate_representation();
@@ -105,9 +107,15 @@ fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
 
             continue;
         }
+        if let Some(struct_arm) = nested_struct_arm(context, variant) {
+            nested_arms.push(struct_arm);
+
+            continue;
+        }
         plain_patterns.push(match &variant.kind {
             VariantKind::Unit => quote! { Self::#variant_ident },
             VariantKind::Payload { .. } => quote! { Self::#variant_ident(_) },
+            VariantKind::Struct { .. } => quote! { Self::#variant_ident { .. } },
         });
     }
     let plain_arm = (!plain_patterns.is_empty()).then(|| quote! { #(#plain_patterns)|* => {} });
@@ -118,6 +126,45 @@ fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
             #plain_arm
         }
     }
+}
+
+/// Generate the arm that checks the nested fields of the given struct `variant`, in declaration order.
+/// The arm binds every nested field by name and leaves the skip fields under `..`, and each check wraps the error of its field type.
+/// Return nothing for a unit variant, a tuple variant and a struct variant without a nested field, which all join the shared arm.
+fn nested_struct_arm(
+    context: &ExpansionContext<'_>,
+    variant: &VariantIntermediateRepresentation,
+) -> Option<TokenStream> {
+    let VariantKind::Struct { fields } = &variant.kind else {
+        return None;
+    };
+    let validate = validate_trait();
+    let error_constructor = context.error_constructor_turbofish();
+    let (bindings, checks): (Vec<&Ident>, Vec<TokenStream>) = fields
+        .iter()
+        .filter_map(|field| {
+            let (field_type, wrapper_variant) = field.nested_payload()?;
+            let field_ident = &field.ident;
+
+            Some((
+                field_ident,
+                quote! {
+                    ::core::result::Result::map_err(
+                        <#field_type as #validate>::validate(#field_ident),
+                        #error_constructor::#wrapper_variant,
+                    )?;
+                },
+            ))
+        })
+        .unzip();
+    if checks.is_empty() {
+        return None;
+    }
+    let variant_ident = &variant.ident;
+
+    Some(quote! {
+        Self::#variant_ident { #(#bindings,)* .. } => { #(#checks)* }
+    })
 }
 
 /// Generate the field validator of the given `field` of the validated type of `context`.

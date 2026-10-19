@@ -1,4 +1,4 @@
-error: a variant payload needs exactly one #[validate(...)] marker among nested and skip
+error: a variant payload or a struct variant field needs exactly one #[validate(...)] marker among nested and skip, because a public variant constructor bypasses every rule of the enum, so a range, finite or custom rule belongs in a validated payload type
  --> tests/ui/fail/enum_range_payload.rs:6:23
   |
 6 |     Extend(#[validate(range(0.0..=1.0))] f64),
