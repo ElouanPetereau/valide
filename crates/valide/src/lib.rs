@@ -50,6 +50,27 @@ pub trait Patch: Validate {
     fn to_draft(&self) -> Self::Draft;
 }
 
+/// An optional value passes the validation while it holds nothing and delegates to its payload otherwise.
+impl<Inner: Validate> Validate for Option<Inner> {
+    type Draft = Option<Inner::Draft>;
+    type Error = Inner::Error;
+
+    fn validate(draft: &Self::Draft) -> Result<(), Self::Error> {
+        draft.as_ref().map_or(Ok(()), Inner::validate)
+    }
+
+    fn from_draft_unchecked(draft: Self::Draft) -> Self {
+        draft.map(Inner::from_draft_unchecked)
+    }
+}
+
+/// An optional value converts its payload back to a draft and keeps nothing as nothing.
+impl<Inner: Patch> Patch for Option<Inner> {
+    fn to_draft(&self) -> Self::Draft {
+        self.as_ref().map(Inner::to_draft)
+    }
+}
+
 #[cfg(test)]
 #[path = "../examples/spacecraft"] // The domain model of the tests is the model of the `spacecraft` example.
 mod tests {

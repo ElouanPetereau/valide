@@ -71,6 +71,7 @@ fn main() {
 - The draft, the only way in.
   It carries no invariant, so you can build it field by field, read it from a file or receive it over a network.
   A `nested` field appears as the draft of its own type, named through the projection `<FieldType as Validate>::Draft`.
+  An `Option<T>` nested field appears as `Option<TDraft>`.
 - One validator per validated field, callable alone to test one rule on its own.
 - The aggregated function `validate`, which runs the field validators in declaration order, stops at the first error, then runs every final validation.
   A final validation holds a rule that spans several fields, so it always reads a draft whose fields are individually valid.
@@ -116,9 +117,13 @@ Every field must also be private. A public field is a compilation error, because
   `is_finite` method of the field type, which a trait bound can provide for a generic field.
 - `#[validate(nested)]` delegates the validation to the type of the field, which must implement
   `Validate`. The draft of the type holds the draft of the field.
+  An `Option<T>` field also works when `T` implements `Validate`, because the crate implements `Validate` and `Patch` for every `Option<T>` whose `T` implements them.
+  A `None` value passes and a `Some` value delegates to `T`.
+  The draft then holds `Option<TDraft>`, so a missing key deserializes as `None`.
 - `#[validate(custom(check_label, error = LabelError))]` delegates the validation of the field to  `check_label`.
   It must be an inherent associated function of the validated type, because the generated call names it `Type::check_label(&draft.field)`.
   The function takes a reference to the field and returns `Result<(), LabelError>`.
+  The function receives the whole field, so a custom check of an `Option<T>` field receives `&Option<T>` and decides what `None` means.
 - `#[validate(skip)]` excludes the field from every field validation, so the field gets no
   validator. The setter of the field stays infallible while the type declares no final
   validation. As soon as the type declares one final validation, the setter becomes fallible.
@@ -159,6 +164,7 @@ the error enum is `ValueOutOfRange` and its finite variant is `ValueNotFinite`.
 ### Enums
 
 An enum is supported. A variant is a unit variant, or a tuple variant with exactly one payload that carries the marker, such as `Custom(#[validate(nested)] CelestialBody)`.
+A payload can also be an `Option<T>`, such as `Body(#[validate(nested)] Option<CelestialBody>)`, which passes when it holds nothing.
 A payload accepts `nested` and `skip` only.
 The enum declares no rule of its own, so every rule lives in the payload type and a public variant constructor bypasses nothing.
 
