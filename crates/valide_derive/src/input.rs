@@ -69,8 +69,6 @@ const VARIANT_MARKER_MESSAGE: &str =
     "#[validate(...)] marks the payload of a variant, not the variant itself";
 /// Message that describes the accepted shapes of a variant.
 const VARIANT_SHAPE_MESSAGE: &str = "a validated variant must be a unit variant, a tuple variant with exactly one payload or a struct variant";
-/// Message of the rejection of a struct variant field that carries no name, which the syntax tree never produces.
-const VARIANT_FIELD_NAME_MESSAGE: &str = "a field of a struct variant must carry a name";
 /// Message of the rejection of a union.
 const UNION_MESSAGE: &str = "a validated type must be a struct or an enum, not a union";
 /// Message of the rejection of a `final_validation` attribute on a field.
@@ -662,9 +660,11 @@ fn parse_variant_field(
     field: &Field,
     variant_ident: &Ident,
 ) -> Result<VariantFieldIntermediateRepresentation> {
-    let Some(ident) = &field.ident else {
-        return Err(Error::new(field.ty.span(), VARIANT_FIELD_NAME_MESSAGE));
-    };
+    // The caller passes a field of a named field list, which always carries its identifier
+    let ident = field
+        .ident
+        .as_ref()
+        .expect("a field of a named field list always carries a name");
     let logical_name = naming::plain_name(&ident.to_string()).to_owned();
 
     let SortedAttributes {
