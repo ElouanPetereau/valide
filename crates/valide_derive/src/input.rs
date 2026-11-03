@@ -269,6 +269,47 @@ fn require_private_field(field: &Field) -> Result<()> {
     Err(Error::new_spanned(&field.vis, PRIVATE_FIELD_MESSAGE))
 }
 
+/// Attributes of a field, a variant payload or a struct variant field, sorted by their role.
+struct SortedAttributes<'attribute> {
+    /// Documentation attributes, which the draft field also carries.
+    docs: Vec<Attribute>,
+    /// Attribute payloads that the draft field carries verbatim.
+    passthrough: Vec<TokenStream>,
+    /// The `validate` attributes, which the caller requires to be exactly one.
+    markers: Vec<&'attribute Attribute>,
+}
+
+/// Sort the given `attributes` of a field, a variant payload or a struct variant field by their role.
+/// Reject a `final_validation` attribute, which describes a whole type.
+fn sort_field_attributes(attributes: &[Attribute]) -> Result<SortedAttributes<'_>> {
+    let mut sorted = SortedAttributes {
+        docs: Vec::new(),
+        passthrough: Vec::new(),
+        markers: Vec::new(),
+    };
+    for attribute in attributes {
+        let path = attribute.path();
+        if path.is_ident(DOC_ATTRIBUTE) {
+            sorted.docs.push(attribute.clone());
+        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
+            sorted.markers.push(attribute);
+        } else if path.is_ident(SERDE_ATTRIBUTE) {
+            // The draft carries the wire format of the type behind a deserialization validation,
+            // so the serde attributes of a field must reach the draft field
+            sorted.passthrough.push(attribute.meta.to_token_stream());
+        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
+            sorted.passthrough.push(draft_attr_tokens(attribute)?);
+        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
+            return Err(Error::new_spanned(
+                attribute,
+                FIELD_FINAL_VALIDATION_MESSAGE,
+            ));
+        }
+    }
+
+    Ok(sorted)
+}
+
 /// Parse the attribute grammar of the given `field`, at `position` in the declaration order, into its representation.
 fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermediateRepresentation> {
     let (member, logical_name, name_span) = field.ident.as_ref().map_or_else(
@@ -290,28 +331,11 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
         },
     );
 
-    let mut docs: Vec<Attribute> = Vec::new();
-    let mut passthrough: Vec<TokenStream> = Vec::new();
-    let mut markers: Vec<&Attribute> = Vec::new();
-    for attribute in &field.attrs {
-        let path = attribute.path();
-        if path.is_ident(DOC_ATTRIBUTE) {
-            docs.push(attribute.clone());
-        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
-            markers.push(attribute);
-        } else if path.is_ident(SERDE_ATTRIBUTE) {
-            // The draft carries the wire format of the type behind a deserialization validation,
-            // so the serde attributes of a field must reach the draft field
-            passthrough.push(attribute.meta.to_token_stream());
-        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
-            passthrough.push(draft_attr_tokens(attribute)?);
-        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
-            return Err(Error::new_spanned(
-                attribute,
-                FIELD_FINAL_VALIDATION_MESSAGE,
-            ));
-        }
-    }
+    let SortedAttributes {
+        docs,
+        passthrough,
+        markers,
+    } = sort_field_attributes(&field.attrs)?;
 
     let mut markers = markers.into_iter();
     let Some(marker) = markers.next() else {
@@ -643,26 +667,11 @@ fn parse_variant_field(
     };
     let logical_name = naming::plain_name(&ident.to_string()).to_owned();
 
-    let mut docs: Vec<Attribute> = Vec::new();
-    let mut passthrough: Vec<TokenStream> = Vec::new();
-    let mut markers: Vec<&Attribute> = Vec::new();
-    for attribute in &field.attrs {
-        let path = attribute.path();
-        if path.is_ident(DOC_ATTRIBUTE) {
-            docs.push(attribute.clone());
-        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
-            markers.push(attribute);
-        } else if path.is_ident(SERDE_ATTRIBUTE) {
-            passthrough.push(attribute.meta.to_token_stream());
-        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
-            passthrough.push(draft_attr_tokens(attribute)?);
-        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
-            return Err(Error::new_spanned(
-                attribute,
-                FIELD_FINAL_VALIDATION_MESSAGE,
-            ));
-        }
-    }
+    let SortedAttributes {
+        docs,
+        passthrough,
+        markers,
+    } = sort_field_attributes(&field.attrs)?;
 
     let mut markers = markers.into_iter();
     let Some(marker) = markers.next() else {
@@ -686,26 +695,11 @@ fn parse_variant_field(
 /// Parse the single `payload` of the tuple variant called `variant_ident` into the content of the variant.
 /// The name of the variant builds the wrapper variant of a nested payload.
 fn parse_payload(payload: &Field, variant_ident: &Ident) -> Result<VariantKind> {
-    let mut docs: Vec<Attribute> = Vec::new();
-    let mut passthrough: Vec<TokenStream> = Vec::new();
-    let mut markers: Vec<&Attribute> = Vec::new();
-    for attribute in &payload.attrs {
-        let path = attribute.path();
-        if path.is_ident(DOC_ATTRIBUTE) {
-            docs.push(attribute.clone());
-        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
-            markers.push(attribute);
-        } else if path.is_ident(SERDE_ATTRIBUTE) {
-            passthrough.push(attribute.meta.to_token_stream());
-        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
-            passthrough.push(draft_attr_tokens(attribute)?);
-        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
-            return Err(Error::new_spanned(
-                attribute,
-                FIELD_FINAL_VALIDATION_MESSAGE,
-            ));
-        }
-    }
+    let SortedAttributes {
+        docs,
+        passthrough,
+        markers,
+    } = sort_field_attributes(&payload.attrs)?;
 
     let mut markers = markers.into_iter();
     let Some(marker) = markers.next() else {
