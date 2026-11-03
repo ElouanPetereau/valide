@@ -4,17 +4,18 @@
 //! the serde attributes and the payloads of the field level `draft_attr`.
 //! Every field is public, so a caller can build a draft field by field and test it.
 //! The draft of an enum mirrors every variant the same way, and every variant of an enum is already public.
+//! A struct variant keeps its braces and its named fields, so an empty one stays distinct from a unit variant.
 //! A nested field and a nested variant payload take the draft type of their own type, which the associated type projection names.
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::Type;
 
 use crate::{
     expand::{ExpansionContext, article, doc, validate_trait},
     intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, Shape, VariantIntermediateRepresentation,
-        VariantKind, VariantRule,
+        FieldIntermediateRepresentation, FieldRule, Payload, Shape,
+        VariantFieldIntermediateRepresentation, VariantIntermediateRepresentation, VariantKind,
+        VariantRule,
     },
 };
 
@@ -101,7 +102,8 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
 }
 
 /// Return the declaration that the draft gives to the given `variant`.
-/// A unit variant stays a unit variant and a payload variant holds the draft type of its payload.
+/// A unit variant stays a unit variant, a payload variant holds the draft type of its payload
+/// and a struct variant holds one field per field, each with the draft type of its own.
 fn draft_variant(variant: &VariantIntermediateRepresentation) -> TokenStream {
     let ident = &variant.ident;
     let docs = variant_docs(variant);
@@ -119,18 +121,33 @@ fn draft_variant(variant: &VariantIntermediateRepresentation) -> TokenStream {
             #attributes
             #ident,
         },
-        VariantKind::Payload {
-            ty,
-            rule,
-            docs,
-            passthrough,
-        } => {
-            let payload_passthrough = passthrough.iter().map(|payload| quote! { #[#payload] });
-            let payload_type = payload_type(ty, rule);
+        VariantKind::Payload(payload) => {
+            let payload_docs = &payload.docs;
+            let payload_passthrough = payload_passthrough(payload);
+            let payload_type = payload_type(payload);
 
             quote! {
                 #attributes
-                #ident(#(#docs)* #(#payload_passthrough)* #payload_type),
+                #ident(#(#payload_docs)* #payload_passthrough #payload_type),
+            }
+        }
+        VariantKind::Struct { fields } => {
+            let draft_fields = fields.iter().map(|field| {
+                let docs = variant_field_docs(field);
+                let field_passthrough = payload_passthrough(&field.payload);
+                let field_ident = &field.ident;
+                let field_type = payload_type(&field.payload);
+
+                quote! {
+                    #docs
+                    #field_passthrough
+                    #field_ident: #field_type,
+                }
+            });
+
+            quote! {
+                #attributes
+                #ident { #(#draft_fields)* },
             }
         }
     }
@@ -148,10 +165,33 @@ fn variant_docs(variant: &VariantIntermediateRepresentation) -> TokenStream {
     quote! { #(#docs)* }
 }
 
-/// Return the type that the draft gives to a variant payload of type `ty` under the rule `rule`.
+/// Return the documentation attributes that the draft gives to the given struct variant `field`.
+/// A field of the validated type that carries no documentation gets a fallback,
+/// because a named field of the draft is as public as the draft and must stay documented.
+fn variant_field_docs(field: &VariantFieldIntermediateRepresentation) -> TokenStream {
+    if field.payload.docs.is_empty() {
+        return doc(&format!("The `{}` field.", field.logical_name));
+    }
+    let docs = &field.payload.docs;
+
+    quote! { #(#docs)* }
+}
+
+/// Return the attributes that the given variant `payload` forwards to the draft payload.
+fn payload_passthrough(payload: &Payload) -> TokenStream {
+    let passthrough = payload
+        .passthrough
+        .iter()
+        .map(|attribute| quote! { #[#attribute] });
+
+    quote! { #(#passthrough)* }
+}
+
+/// Return the type that the draft gives to the given variant `payload`.
 /// A nested payload holds the draft of its own type, every other payload holds its declared type.
-fn payload_type(ty: &Type, rule: &VariantRule) -> TokenStream {
-    match rule {
+fn payload_type(payload: &Payload) -> TokenStream {
+    let ty = &payload.ty;
+    match payload.rule {
         VariantRule::Nested { .. } => {
             let validate = validate_trait();
 
@@ -199,4 +239,80 @@ fn field_type(field: &FieldIntermediateRepresentation) -> TokenStream {
     }
 
     quote! { #ty }
+}
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::TokenStream;
+    use quote::quote;
+    use syn::{DeriveInput, parse_str};
+
+    use crate::{
+        expand::{ExpansionContext, draft::expand},
+        input::parse,
+    };
+
+    /// Return the text of the given `tokens` with every space removed.
+    fn token_text(tokens: &TokenStream) -> String {
+        tokens.to_string().split_whitespace().collect()
+    }
+
+    /// Return the token text of the draft that the derive generates for `source`.
+    /// The source must parse as a derive input and the derive must accept it.
+    fn generated_draft(source: &str) -> String {
+        let derive_input: DeriveInput =
+            parse_str(source).expect("the tested derive input must parse");
+        let intermediate_representation =
+            parse(&derive_input).expect("the tested derive input must be accepted");
+        let context = ExpansionContext::new(&intermediate_representation);
+
+        token_text(&expand(&context))
+    }
+
+    #[test]
+    fn the_draft_of_an_empty_struct_variant_keeps_its_braces() {
+        let expected = quote! {
+            #[doc = "Unvalidated draft of a [`Pointing`]."]
+            enum PointingDraft {
+                #[doc = "The `Nadir` variant."]
+                Nadir,
+                #[doc = "The `SunPointing` variant."]
+                SunPointing {},
+            }
+        };
+
+        assert_eq!(
+            generated_draft("enum Pointing { Nadir, SunPointing {} }"),
+            token_text(&expected),
+            "The draft must keep the braces of an empty struct variant, so it stays distinct from a unit variant"
+        );
+    }
+
+    #[test]
+    fn the_draft_of_a_struct_variant_mirrors_its_fields() {
+        let expected = quote! {
+            #[doc = "Unvalidated draft of a [`Pointing`]."]
+            enum PointingDraft {
+                #[doc = "The `Custom` variant."]
+                Custom {
+                    #[doc = " Body to point at."]
+                    #[serde(rename = "target")]
+                    body: <CelestialBody as ::valide::Validate>::Draft,
+                    #[doc = "The `comment` field."]
+                    #[serde(default)]
+                    comment: String,
+                },
+            }
+        };
+
+        assert_eq!(
+            generated_draft(
+                "enum Pointing { Custom { \
+                 #[doc = \" Body to point at.\"] #[serde(rename = \"target\")] #[validate(nested)] body: CelestialBody, \
+                 #[draft_attr(serde(default))] #[validate(skip)] comment: String } }"
+            ),
+            token_text(&expected),
+            "The draft field must carry the documentation, the serde attribute and the draft_attr payload of its field, and a field without documentation must get the fallback"
+        );
+    }
 }

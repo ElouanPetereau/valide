@@ -25,6 +25,8 @@ mod naming;
 /// the aggregate validator, the `TryFrom` of the draft, the `new` constructor and the field getters.
 ///
 /// The error enum carries one variant per range field and one variant per finite field, and each of them holds the value that the validation rejected.
+/// For a field written as an `Option`, the variant holds the payload type.
+/// A nested payload of an enum variant gets a wrapper variant, named after the variant for a tuple payload and after the variant and the field for a struct variant field.
 #[proc_macro_derive(Validate, attributes(validate, final_validation, draft_attr))]
 pub fn derive_validate(input: TokenStream) -> TokenStream {
     let derive_input = syn::parse_macro_input!(input as syn::DeriveInput);

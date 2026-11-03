@@ -3,11 +3,13 @@
 //! The module holds the expansion context and the leaf helpers that the expanders share.
 //! Every emitted path is absolute, so the generated code never depends on the imports of the module that holds the validated type.
 
-use proc_macro2::TokenStream;
-use quote::{quote, quote_spanned};
+use proc_macro2::{Ident, TokenStream};
+use quote::{format_ident, quote, quote_spanned};
 use syn::{ImplGenerics, Turbofish, TypeGenerics, WhereClause, spanned::Spanned as _};
 
-use crate::intermediate_representation::TypeIntermediateRepresentation;
+use crate::intermediate_representation::{
+    Payload, TypeIntermediateRepresentation, VariantIntermediateRepresentation, VariantKind,
+};
 
 pub(crate) mod construction;
 pub(crate) mod draft;
@@ -249,6 +251,47 @@ pub(crate) fn validate_trait() -> TokenStream {
 /// Path of the `Patch` trait in the generated code.
 pub(crate) fn patch_trait() -> TokenStream {
     quote! { ::valide::Patch }
+}
+
+/// Return the binding of the payload of a tuple variant in every generated pattern.
+pub(crate) fn tuple_payload_binding() -> Ident {
+    format_ident!("payload")
+}
+
+/// Generate the match arm that converts the given `variant` of the enum called `source` into the same variant of `Self`.
+///
+/// Each payload binds under the name of its field, or under the tuple payload binding, and `convert` builds its new value from that binding.
+/// A payload for which `convert` gives nothing moves its binding unchanged, so a struct variant field keeps the shorthand.
+pub(crate) fn conversion_arm(
+    source: &Ident,
+    variant: &VariantIntermediateRepresentation,
+    convert: fn(&Ident, &Payload) -> Option<TokenStream>,
+) -> TokenStream {
+    let variant_ident = &variant.ident;
+    match &variant.kind {
+        VariantKind::Unit => quote! { #source::#variant_ident => Self::#variant_ident, },
+        VariantKind::Payload(payload) => {
+            let binding = tuple_payload_binding();
+            let value = convert(&binding, payload).unwrap_or_else(|| quote! { #binding });
+
+            quote! { #source::#variant_ident(#binding) => Self::#variant_ident(#value), }
+        }
+        VariantKind::Struct { fields } => {
+            let bindings = fields.iter().map(|field| &field.ident);
+            let values = fields.iter().map(|field| {
+                let field_ident = &field.ident;
+
+                convert(field_ident, &field.payload).map_or_else(
+                    || quote! { #field_ident },
+                    |value| quote! { #field_ident: #value },
+                )
+            });
+
+            quote! {
+                #source::#variant_ident { #(#bindings),* } => Self::#variant_ident { #(#values),* },
+            }
+        }
+    }
 }
 
 /// Build the documentation attribute that carries the given `text`.

@@ -71,6 +71,7 @@ fn main() {
 - The draft, the only way in.
   It carries no invariant, so you can build it field by field, read it from a file or receive it over a network.
   A `nested` field appears as the draft of its own type, named through the projection `<FieldType as Validate>::Draft`.
+  An `Option<T>` nested field appears as `Option<TDraft>`.
 - One validator per validated field, callable alone to test one rule on its own.
 - The aggregated function `validate`, which runs the field validators in declaration order, stops at the first error, then runs every final validation.
   A final validation holds a rule that spans several fields, so it always reads a draft whose fields are individually valid.
@@ -78,6 +79,7 @@ fn main() {
   Every range field gets its own variant, named after the field, such as `BusMassOutOfRange`.
   The variant carries the two evaluated bounds of the field and the value that the validation rejected.
   Every finite field also gets its own variant, named after the field, such as `AreaNotFinite`, which carries the value that the validation rejected.
+  For an `Option<T>` field the variant carries `T` values, never `Option<T>`.
   The `Display` of a range variant names the field and the bounds only, and the `Display` of a finite variant names the field only.
   The rejected value stays in the variant, reachable through a match or through `Debug`.
   One wrapper variant exists per final validation, per fallible nested field and per custom field.
@@ -114,11 +116,17 @@ Every field must also be private. A public field is a compilation error, because
 - `#[validate(finite)]` accepts a floating point value that is neither infinite nor a not a
   number value. The marker is meant for `f32` and `f64`. The generated check calls the
   `is_finite` method of the field type, which a trait bound can provide for a generic field.
+- `range` and `finite` also accept a field written as `Option<T>`.
+  A `None` value passes the check and a `Some` value is checked as a plain `T`, so the bounds are values of `T` and the error variant carries a `T`.
+  The draft field, the getter and the setter keep the `Option<T>`.
 - `#[validate(nested)]` delegates the validation to the type of the field, which must implement
   `Validate`. The draft of the type holds the draft of the field.
+  An `Option<T>` field also works when `T` implements `Validate`, a `None` value passes and a `Some` value delegates to `T`.
+  The draft then holds `Option<TDraft>`, so a missing key deserializes as `None`.
 - `#[validate(custom(check_label, error = LabelError))]` delegates the validation of the field to  `check_label`.
   It must be an inherent associated function of the validated type, because the generated call names it `Type::check_label(&draft.field)`.
   The function takes a reference to the field and returns `Result<(), LabelError>`.
+  The function receives the whole field, so a custom check of an `Option<T>` field receives `&Option<T>` and decides what `None` means.
 - `#[validate(skip)]` excludes the field from every field validation, so the field gets no
   validator. The setter of the field stays infallible while the type declares no final
   validation. As soon as the type declares one final validation, the setter becomes fallible.
@@ -158,11 +166,13 @@ the error enum is `ValueOutOfRange` and its finite variant is `ValueNotFinite`.
 
 ### Enums
 
-An enum is supported. A variant is a unit variant, or a tuple variant with exactly one payload that carries the marker, such as `Custom(#[validate(nested)] CelestialBody)`.
-A payload accepts `nested` and `skip` only.
+An enum is supported. A variant is a unit variant, a tuple variant with exactly one payload that carries the marker, such as `Custom(#[validate(nested)] CelestialBody)`, or a struct variant whose every field carries a marker, such as `Custom { #[validate(nested)] body: CelestialBody, #[validate(nested)] other_body: Option<CelestialBody>, #[validate(skip)] label: String }`.
+A payload and a struct variant field accept `nested` and `skip` only.
 The enum declares no rule of its own, so every rule lives in the payload type and a public variant constructor bypasses nothing.
+The documentation, the serde attributes and the `draft_attr` payloads of a struct variant field reach the draft field, like the ones of a struct field.
 
-The error enum holds one wrapper variant per nested variant, named after the variant.
+The error enum holds one wrapper variant per nested payload. The wrapper of a tuple payload is named after the variant, such as `CustomValidationError`, and the wrapper of a struct variant field is named after the variant and the field, such as `CustomBodyValidationError` for `Custom { body }`.
+The validation of a struct variant checks its nested fields in declaration order and stops at the first error.
 An enum gets no getter, because a caller matches on the public variants.
 `Patch` generates no setter, because a patch of an enum replaces the whole variant, which `new` already validates.
 The draft enum takes the serde representation of serde itself, the external tagging.
@@ -170,11 +180,14 @@ Forward another representation with `#[draft_attr(serde(...))]`.
 
 ## Limitations
 
-- A validated type must be a struct or an enum, and a union is rejected with a clear error. A variant must be a unit variant or a tuple variant with exactly one `nested` or `skip` payload.
+- A validated type must be a struct or an enum, and a union is rejected with a clear error. A variant must be a unit variant, a tuple variant with exactly one `nested` or `skip` payload, or a struct variant whose fields are all `nested` or `skip`. A tuple variant with no payload or with several payloads is rejected.
 - A tuple struct must have exactly one field.
 - The by value getter uses the written token of the field type, so an alias to a primitive gets a getter that returns a reference.
 - `Validate::from_draft_unchecked` skips the validation. It exists for the generated code.
   A direct call on an invalid draft builds an invalid value.
+- The derive reads `Option` from the written type of a range field or a finite field.
+  A type alias of `Option<T>` is checked as a whole value, which fails to compile against bounds of type `T`.
+  An `Option<Option<T>>` is rejected with an error.
 - Generics are supported with some caveats
   - A generic type gets no inferred bounds.
     Declare every bound yourself, the macro copies the generics and the where clause verbatim onto every generated item, and a missing bound fails with the ordinary compiler error.

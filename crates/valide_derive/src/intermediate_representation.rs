@@ -28,7 +28,7 @@ pub(crate) enum Shape {
     Named,
     /// Tuple struct with exactly one unnamed field.
     Newtype,
-    /// Enum whose variants are unit variants or tuple variants with exactly one payload.
+    /// Enum whose variants are unit variants, tuple variants with exactly one payload or struct variants.
     Enum,
 }
 
@@ -42,11 +42,17 @@ pub(crate) enum FieldRule {
         upper: TokenStream,
         /// Variant of the generated error enum that carries the two evaluated bounds and the rejected value.
         error_variant: Ident,
+        /// Payload type of the field when its declared type is written as an `Option`.
+        /// The check then reads the payload under the `Some` pattern and the error variant carries this type.
+        inner_ty: Option<Type>,
     },
     /// The value must be a finite number.
     Finite {
         /// Variant of the generated error enum that carries the rejected value.
         error_variant: Ident,
+        /// Payload type of the field when its declared type is written as an `Option`.
+        /// The check then reads the payload under the `Some` pattern and the error variant carries this type.
+        inner_ty: Option<Type>,
     },
     /// The type of the field validates the value with its own `Validate` implementation.
     Nested {
@@ -88,7 +94,7 @@ impl FieldIntermediateRepresentation {
     /// A range field and a finite field each carry one, because each rejection comes from the field itself.
     pub(crate) fn own_variant(&self) -> Option<&Ident> {
         match &self.rule {
-            FieldRule::Range { error_variant, .. } | FieldRule::Finite { error_variant } => {
+            FieldRule::Range { error_variant, .. } | FieldRule::Finite { error_variant, .. } => {
                 Some(error_variant)
             }
             FieldRule::Nested { .. } | FieldRule::Custom { .. } | FieldRule::Skip => None,
@@ -147,6 +153,23 @@ impl FieldIntermediateRepresentation {
         BY_VALUE_TYPES.iter().any(|name| ident == name)
     }
 
+    /// Return the payload type of the field when its range check or its finite check reads the payload of an `Option`.
+    /// Return nothing for every other field, whose check reads the whole value.
+    pub(crate) fn option_payload_ty(&self) -> Option<&Type> {
+        match &self.rule {
+            FieldRule::Range { inner_ty, .. } | FieldRule::Finite { inner_ty, .. } => {
+                inner_ty.as_ref()
+            }
+            FieldRule::Nested { .. } | FieldRule::Custom { .. } | FieldRule::Skip => None,
+        }
+    }
+
+    /// Return the type that the range check or the finite check of the field reads and that its error variant carries.
+    /// The payload type of an `Option` field, or the declared type of every other field.
+    pub(crate) fn checked_ty(&self) -> &Type {
+        self.option_payload_ty().unwrap_or(&self.ty)
+    }
+
     /// Build the identifier `prefix` plus the logical name of the field, with the span of the field.
     /// The parsing stage rejects a logical name that builds no identifier
     /// and it also removes the prefix of a raw identifier, so the built name is always valid.
@@ -175,6 +198,40 @@ pub(crate) enum VariantRule {
     Skip,
 }
 
+/// Payload of a tuple variant or of one named field of a struct variant of a validated enum.
+pub(crate) struct Payload {
+    /// Declared type of the payload.
+    pub(crate) ty: Type,
+    /// Validation rule of the payload.
+    pub(crate) rule: VariantRule,
+    /// Documentation attributes of the payload, which the generator clones onto the draft payload.
+    pub(crate) docs: Vec<Attribute>,
+    /// Payloads that the generator re-emits as attributes of the draft payload.
+    /// A serde attribute of the payload lands here whole, a `draft_attr` attribute lands here without its own name.
+    pub(crate) passthrough: Vec<TokenStream>,
+}
+
+impl Payload {
+    /// Return the wrapper variant of the payload while its rule is nested.
+    /// Return nothing for a skip payload, which reaches no error enum.
+    pub(crate) fn nested_wrapper(&self) -> Option<&Ident> {
+        match &self.rule {
+            VariantRule::Nested { wrapper_variant } => Some(wrapper_variant),
+            VariantRule::Skip => None,
+        }
+    }
+}
+
+/// One named field of a struct variant of a validated enum.
+pub(crate) struct VariantFieldIntermediateRepresentation {
+    /// Identifier of the field, which the draft field and every generated pattern reuse, so a raw identifier stays valid.
+    pub(crate) ident: Ident,
+    /// Name that the generated documentation and the wrapper variant use, the identifier without the prefix of a raw identifier.
+    pub(crate) logical_name: String,
+    /// Payload that the field holds.
+    pub(crate) payload: Payload,
+}
+
 /// Content of one variant of a validated enum.
 #[expect(
     clippy::large_enum_variant,
@@ -184,15 +241,12 @@ pub(crate) enum VariantKind {
     /// Variant that carries no payload.
     Unit,
     /// Tuple variant that carries exactly one payload.
-    Payload {
-        /// Declared type of the payload.
-        ty: Type,
-        /// Validation rule of the payload.
-        rule: VariantRule,
-        /// Documentation attributes of the payload, which the generator clones onto the draft payload.
-        docs: Vec<Attribute>,
-        /// Payloads that the generator re-emits as attributes of the draft payload.
-        passthrough: Vec<TokenStream>,
+    Payload(Payload),
+    /// Struct variant that carries named fields, each with its own rule.
+    /// The list stays empty for a variant written with empty braces, which the draft keeps distinct from a unit variant.
+    Struct {
+        /// Fields in declaration order.
+        fields: Vec<VariantFieldIntermediateRepresentation>,
     },
 }
 
@@ -210,18 +264,23 @@ pub(crate) struct VariantIntermediateRepresentation {
 }
 
 impl VariantIntermediateRepresentation {
-    /// Return the declared payload type and the wrapper variant of the variant.
-    /// Return nothing for a unit variant and for a payload that takes part in no validation,
+    /// Return the declared type and the wrapper variant of every nested payload of the variant, in declaration order.
+    /// A tuple variant gives its single payload while it is nested and a struct variant gives each nested field,
     /// because only a nested payload reaches the generated error enum.
-    pub(crate) fn nested_payload(&self) -> Option<(&Type, &Ident)> {
-        let VariantKind::Payload { ty, rule, .. } = &self.kind else {
-            return None;
+    pub(crate) fn nested_payloads(&self) -> impl Iterator<Item = (&Type, &Ident)> {
+        let (tuple_payload, struct_fields): (
+            Option<&Payload>,
+            &[VariantFieldIntermediateRepresentation],
+        ) = match &self.kind {
+            VariantKind::Unit => (None, &[]),
+            VariantKind::Payload(payload) => (Some(payload), &[]),
+            VariantKind::Struct { fields } => (None, fields),
         };
 
-        match rule {
-            VariantRule::Nested { wrapper_variant } => Some((ty, wrapper_variant)),
-            VariantRule::Skip => None,
-        }
+        tuple_payload
+            .into_iter()
+            .chain(struct_fields.iter().map(|field| &field.payload))
+            .filter_map(|payload| Some((&payload.ty, payload.nested_wrapper()?)))
     }
 }
 
@@ -277,10 +336,11 @@ impl TypeIntermediateRepresentation {
     /// Return the wrapper variants of the validated type, the nested variants first, then the final validations and the fields after.
     /// A nested field and a custom field share the field block, where both keep the declaration order of the fields.
     /// The order matches the order of the variants of the generated enum.
+    /// A struct variant gives one wrapper per nested field, in field order.
     pub(crate) fn wrapper_variants(&self) -> impl Iterator<Item = &Ident> {
-        let payload_variants = self.variants.iter().filter_map(|variant| {
+        let payload_variants = self.variants.iter().flat_map(|variant| {
             variant
-                .nested_payload()
+                .nested_payloads()
                 .map(|(_, wrapper_variant)| wrapper_variant)
         });
         let final_variants = self
@@ -315,9 +375,9 @@ impl TypeIntermediateRepresentation {
             .iter()
             .filter(|field| matches!(field.rule, FieldRule::Nested { .. }))
             .map(|field| &field.ty);
-        let payload_types = self.variants.iter().filter_map(|variant| {
+        let payload_types = self.variants.iter().flat_map(|variant| {
             variant
-                .nested_payload()
+                .nested_payloads()
                 .map(|(payload_type, _)| payload_type)
         });
 

@@ -3,17 +3,19 @@
 //! For structs, the generator emits one field validator per validated field, so a caller can test the fields one by one.
 //! It emits the aggregate that runs them in declaration order, then runs every final validation.
 //! For enums, the aggregate matches the draft variant and delegates to the payload of the variant,
+//! or to each nested field of a struct variant in declaration order.
 //! It emits no standalone validator, because delegation is the only rule that a variant carries.
 //! The aggregate stops at the first error found.
+//! A range field or a finite field whose declared type is an `Option` runs its check on the payload under the `Some` pattern, so a `None` value passes.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
 use crate::{
-    expand::{ExpansionContext, doc, validate_trait},
+    expand::{ExpansionContext, doc, tuple_payload_binding, validate_trait},
     intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
-        VariantKind,
+        FieldIntermediateRepresentation, FieldRule, Payload, Shape, TypeIntermediateRepresentation,
+        VariantIntermediateRepresentation, VariantKind,
     },
 };
 
@@ -79,6 +81,7 @@ fn field_calls(intermediate_representation: &TypeIntermediateRepresentation) -> 
 /// Generate the match that validates the payload of the draft variant of the validated type of `context`.
 /// A nested variant delegates to the type of its payload and wraps the error that the type returns.
 /// Every variant that carries no rule shares a single arm, so no two arms of the match hold the same body.
+/// A struct variant with a nested field gets one arm that checks its nested fields in field order.
 /// Return an empty stream for an enum without a variant, which carries no payload to reach.
 fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
     let intermediate_representation = context.intermediate_representation();
@@ -86,27 +89,19 @@ fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
         return TokenStream::new();
     }
 
-    let validate = validate_trait();
-    let error_constructor = context.error_constructor_turbofish();
     let mut nested_arms: Vec<TokenStream> = Vec::new();
     let mut plain_patterns: Vec<TokenStream> = Vec::new();
     for variant in &intermediate_representation.variants {
-        let variant_ident = &variant.ident;
-        if let Some((payload_type, wrapper_variant)) = variant.nested_payload() {
-            nested_arms.push(quote! {
-                Self::#variant_ident(payload) => {
-                    ::core::result::Result::map_err(
-                        <#payload_type as #validate>::validate(payload),
-                        #error_constructor::#wrapper_variant,
-                    )?;
-                }
-            });
+        if let Some(nested_arm) = nested_arm(context, variant) {
+            nested_arms.push(nested_arm);
 
             continue;
         }
+        let variant_ident = &variant.ident;
         plain_patterns.push(match &variant.kind {
             VariantKind::Unit => quote! { Self::#variant_ident },
-            VariantKind::Payload { .. } => quote! { Self::#variant_ident(_) },
+            VariantKind::Payload(_) => quote! { Self::#variant_ident(_) },
+            VariantKind::Struct { .. } => quote! { Self::#variant_ident { .. } },
         });
     }
     let plain_arm = (!plain_patterns.is_empty()).then(|| quote! { #(#plain_patterns)|* => {} });
@@ -117,6 +112,60 @@ fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
             #plain_arm
         }
     }
+}
+
+/// Generate the arm that checks the nested payloads of the given `variant`, in declaration order.
+/// The arm binds every nested payload and leaves the skip fields of a struct variant under `..`.
+/// Return nothing for a variant without a nested payload, which joins the shared arm.
+fn nested_arm(
+    context: &ExpansionContext<'_>,
+    variant: &VariantIntermediateRepresentation,
+) -> Option<TokenStream> {
+    let variant_ident = &variant.ident;
+    match &variant.kind {
+        VariantKind::Unit => None,
+        VariantKind::Payload(payload) => {
+            let binding = tuple_payload_binding();
+            let check = payload_check(context, &binding, payload)?;
+
+            Some(quote! { Self::#variant_ident(#binding) => { #check } })
+        }
+        VariantKind::Struct { fields } => {
+            let (bindings, checks): (Vec<&Ident>, Vec<TokenStream>) = fields
+                .iter()
+                .filter_map(|field| {
+                    let check = payload_check(context, &field.ident, &field.payload)?;
+
+                    Some((&field.ident, check))
+                })
+                .unzip();
+            if checks.is_empty() {
+                return None;
+            }
+
+            Some(quote! { Self::#variant_ident { #(#bindings,)* .. } => { #(#checks)* } })
+        }
+    }
+}
+
+/// Generate the check of the given variant `payload`, read from its `binding`, which wraps the error of the payload type.
+/// Return nothing for a skip payload, which takes part in no validation.
+fn payload_check(
+    context: &ExpansionContext<'_>,
+    binding: &Ident,
+    payload: &Payload,
+) -> Option<TokenStream> {
+    let wrapper_variant = payload.nested_wrapper()?;
+    let ty = &payload.ty;
+    let validate = validate_trait();
+    let error_constructor = context.error_constructor_turbofish();
+
+    Some(quote! {
+        ::core::result::Result::map_err(
+            <#ty as #validate>::validate(#binding),
+            #error_constructor::#wrapper_variant,
+        )?;
+    })
 }
 
 /// Generate the field validator of the given `field` of the validated type of `context`.
@@ -143,42 +192,56 @@ fn field_validator(
     let body = match &field.rule {
         // The early return above already handled this rule
         FieldRule::Skip => return None,
-        // The two bounds are values of the declared type of the field,
+        // The two bounds are values of the checked type of the field,
         // so the check reads them by reference and the rejection moves them into the error
         FieldRule::Range {
             lower,
             upper,
             error_variant,
+            ..
         } => {
-            let ty = &field.ty;
+            let ty = field.checked_ty();
+            let checked = checked_place(field);
+            // The bounds are evaluated before the `Some` pattern, so a bound expression never sees its binding
+            let check = optional_check(
+                field,
+                quote! {
+                    if !::core::ops::RangeBounds::contains(
+                        &(
+                            ::core::ops::Bound::as_ref(&lower),
+                            ::core::ops::Bound::as_ref(&upper),
+                        ),
+                        &#checked,
+                    ) {
+                        return ::core::result::Result::Err(#error_ident::#error_variant {
+                            lower,
+                            upper,
+                            value: ::core::clone::Clone::clone(&#checked),
+                        });
+                    }
+                },
+            );
 
             quote! {
                 let lower: ::core::ops::Bound<#ty> = #lower;
                 let upper: ::core::ops::Bound<#ty> = #upper;
-                if !::core::ops::RangeBounds::contains(
-                    &(
-                        ::core::ops::Bound::as_ref(&lower),
-                        ::core::ops::Bound::as_ref(&upper),
-                    ),
-                    &self.#member,
-                ) {
-                    return ::core::result::Result::Err(#error_ident::#error_variant {
-                        lower,
-                        upper,
-                        value: ::core::clone::Clone::clone(&self.#member),
-                    });
-                }
+                #check
             }
         }
         // The check calls the unqualified function, so a generic field reads it from the bound of its own type
-        FieldRule::Finite { error_variant } => {
-            quote! {
-                if !self.#member.is_finite() {
-                    return ::core::result::Result::Err(#error_ident::#error_variant {
-                        value: ::core::clone::Clone::clone(&self.#member),
-                    });
-                }
-            }
+        FieldRule::Finite { error_variant, .. } => {
+            let checked = checked_place(field);
+
+            optional_check(
+                field,
+                quote! {
+                    if !#checked.is_finite() {
+                        return ::core::result::Result::Err(#error_ident::#error_variant {
+                            value: ::core::clone::Clone::clone(&#checked),
+                        });
+                    }
+                },
+            )
         }
         FieldRule::Nested { wrapper_variant } => {
             let ty = &field.ty;
@@ -220,4 +283,32 @@ fn field_validator(
             ::core::result::Result::Ok(())
         }
     })
+}
+
+/// Return the place expression that the range check or the finite check of the `field` reads.
+/// The payload of an `Option` field comes through the `__valide_payload` reference of the `Some` pattern,
+/// so the place dereferences it and every method call resolves as it does on the field itself.
+/// Every other field is read on `self`.
+fn checked_place(field: &FieldIntermediateRepresentation) -> TokenStream {
+    if field.option_payload_ty().is_some() {
+        return quote! { (*__valide_payload) };
+    }
+    let member = &field.member;
+
+    quote! { self.#member }
+}
+
+/// Wrap the given `check` of the `field` under the `Some` pattern when the declared type of the field is an `Option`.
+/// A `None` value then runs no check at all. Every other field gets its check back untouched.
+fn optional_check(field: &FieldIntermediateRepresentation, check: TokenStream) -> TokenStream {
+    if field.option_payload_ty().is_none() {
+        return check;
+    }
+    let member = &field.member;
+
+    quote! {
+        if let ::core::option::Option::Some(__valide_payload) = &self.#member {
+            #check
+        }
+    }
 }

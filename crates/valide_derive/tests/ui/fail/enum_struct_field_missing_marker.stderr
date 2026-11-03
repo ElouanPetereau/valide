@@ -1,0 +1,5 @@
+error: a variant payload or a struct variant field needs exactly one #[validate(...)] marker among nested and skip, because a public variant constructor bypasses every rule of the enum, so a range, finite or custom rule belongs in a validated payload type
+ --> tests/ui/fail/enum_struct_field_missing_marker.rs:6:14
+  |
+6 |     Extend { fraction: f64 },
+  |              ^^^^^^^^

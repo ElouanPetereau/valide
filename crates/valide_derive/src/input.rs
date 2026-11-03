@@ -9,16 +9,17 @@ use core::ptr;
 use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
 use quote::{ToTokens as _, quote};
 use syn::{
-    Attribute, Data, DataStruct, DeriveInput, Error, Expr, ExprRange, Field, Fields, GenericParam,
-    Generics, Ident, Index, Member, Meta, MetaList, Path, RangeLimits, Result, Token, Variant,
-    Visibility, parse::ParseStream, punctuated::Punctuated, spanned::Spanned as _,
+    Attribute, Data, DataStruct, DeriveInput, Error, Expr, ExprRange, Field, Fields, FieldsNamed,
+    GenericArgument, GenericParam, Generics, Ident, Index, Member, Meta, MetaList, Path,
+    PathArguments, RangeLimits, Result, Token, Type, Variant, Visibility, parse::ParseStream,
+    punctuated::Punctuated, spanned::Spanned as _,
 };
 
 use crate::{
     intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
-        TypeIntermediateRepresentation, VariantIntermediateRepresentation, VariantKind,
-        VariantRule,
+        FieldIntermediateRepresentation, FieldRule, FinalValidation, Payload, Shape,
+        TypeIntermediateRepresentation, VariantFieldIntermediateRepresentation,
+        VariantIntermediateRepresentation, VariantKind, VariantRule,
     },
     naming,
 };
@@ -55,19 +56,19 @@ const EXCLUDED_BOUND: &str = "Excluded";
 const UNBOUNDED_BOUND: &str = "Unbounded";
 /// Logical name of the single field of a newtype.
 const NEWTYPE_LOGICAL_NAME: &str = "value";
+/// Name of the type whose payload a range check and a finite check read under the `Some` pattern.
+const OPTION_TYPE: &str = "Option";
 /// Message that describes the markers of a field.
 const MARKER_MESSAGE: &str = "a field needs exactly one #[validate(...)] marker among range(...), finite, nested, custom(...) and skip";
 /// Message of the rejection of a field that carries a visibility keyword.
 const PRIVATE_FIELD_MESSAGE: &str = "a validated field must be private, because the generated getters and setters guard every access";
 /// Message that describes the markers of a variant payload.
-const PAYLOAD_MARKER_MESSAGE: &str =
-    "a variant payload needs exactly one #[validate(...)] marker among nested and skip";
+const PAYLOAD_MARKER_MESSAGE: &str = "a variant payload or a struct variant field needs exactly one #[validate(...)] marker among nested and skip, because a public variant constructor bypasses every rule of the enum, so a range, finite or custom rule belongs in a validated payload type";
 /// Message of the rejection of a marker that sits on a variant instead of the payload of the variant.
 const VARIANT_MARKER_MESSAGE: &str =
     "#[validate(...)] marks the payload of a variant, not the variant itself";
 /// Message that describes the accepted shapes of a variant.
-const VARIANT_SHAPE_MESSAGE: &str =
-    "a validated variant must be a unit variant or a tuple variant with exactly one payload";
+const VARIANT_SHAPE_MESSAGE: &str = "a validated variant must be a unit variant, a tuple variant with exactly one payload or a struct variant";
 /// Message of the rejection of a union.
 const UNION_MESSAGE: &str = "a validated type must be a struct or an enum, not a union";
 /// Message of the rejection of a `final_validation` attribute on a field.
@@ -82,6 +83,11 @@ const RANGE_MESSAGE: &str =
 /// Message that describes the accepted bounds of the bound pair form.
 const BOUND_MESSAGE: &str =
     "a bound must be Bound::Included(value), Bound::Excluded(value) or Bound::Unbounded";
+/// Message of the rejection of a range field or a finite field written as an `Option` that carries no single type argument.
+const OPTION_ARGUMENT_MESSAGE: &str = "a range or finite field written as an Option must carry exactly one type argument, such as Option<f64>";
+/// Message of the rejection of a range field or a finite field written as an `Option` of an `Option`.
+const OPTION_OF_OPTION_MESSAGE: &str =
+    "a range or finite check reads one Option level only, so Option<Option<T>> is rejected";
 /// Message that describes the arguments of a `custom` marker.
 const CUSTOM_MESSAGE: &str =
     "#[validate(custom(...))] must be written #[validate(custom(fn, error = Type))]";
@@ -261,6 +267,47 @@ fn require_private_field(field: &Field) -> Result<()> {
     Err(Error::new_spanned(&field.vis, PRIVATE_FIELD_MESSAGE))
 }
 
+/// Attributes of a field, a variant payload or a struct variant field, sorted by their role.
+struct SortedAttributes<'attribute> {
+    /// Documentation attributes, which the draft field also carries.
+    docs: Vec<Attribute>,
+    /// Attribute payloads that the draft field carries verbatim.
+    passthrough: Vec<TokenStream>,
+    /// The `validate` attributes, which the caller requires to be exactly one.
+    markers: Vec<&'attribute Attribute>,
+}
+
+/// Sort the given `attributes` of a field, a variant payload or a struct variant field by their role.
+/// Reject a `final_validation` attribute, which describes a whole type.
+fn sort_field_attributes(attributes: &[Attribute]) -> Result<SortedAttributes<'_>> {
+    let mut sorted = SortedAttributes {
+        docs: Vec::new(),
+        passthrough: Vec::new(),
+        markers: Vec::new(),
+    };
+    for attribute in attributes {
+        let path = attribute.path();
+        if path.is_ident(DOC_ATTRIBUTE) {
+            sorted.docs.push(attribute.clone());
+        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
+            sorted.markers.push(attribute);
+        } else if path.is_ident(SERDE_ATTRIBUTE) {
+            // The draft carries the wire format of the type behind a deserialization validation,
+            // so the serde attributes of a field must reach the draft field
+            sorted.passthrough.push(attribute.meta.to_token_stream());
+        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
+            sorted.passthrough.push(draft_attr_tokens(attribute)?);
+        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
+            return Err(Error::new_spanned(
+                attribute,
+                FIELD_FINAL_VALIDATION_MESSAGE,
+            ));
+        }
+    }
+
+    Ok(sorted)
+}
+
 /// Parse the attribute grammar of the given `field`, at `position` in the declaration order, into its representation.
 fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermediateRepresentation> {
     let (member, logical_name, name_span) = field.ident.as_ref().map_or_else(
@@ -282,28 +329,11 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
         },
     );
 
-    let mut docs: Vec<Attribute> = Vec::new();
-    let mut passthrough: Vec<TokenStream> = Vec::new();
-    let mut markers: Vec<&Attribute> = Vec::new();
-    for attribute in &field.attrs {
-        let path = attribute.path();
-        if path.is_ident(DOC_ATTRIBUTE) {
-            docs.push(attribute.clone());
-        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
-            markers.push(attribute);
-        } else if path.is_ident(SERDE_ATTRIBUTE) {
-            // The draft carries the wire format of the type behind a deserialization validation,
-            // so the serde attributes of a field must reach the draft field
-            passthrough.push(attribute.meta.to_token_stream());
-        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
-            passthrough.push(draft_attr_tokens(attribute)?);
-        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
-            return Err(Error::new_spanned(
-                attribute,
-                FIELD_FINAL_VALIDATION_MESSAGE,
-            ));
-        }
-    }
+    let SortedAttributes {
+        docs,
+        passthrough,
+        markers,
+    } = sort_field_attributes(&field.attrs)?;
 
     let mut markers = markers.into_iter();
     let Some(marker) = markers.next() else {
@@ -313,7 +343,7 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
         return Err(Error::new_spanned(extra_marker, MARKER_MESSAGE));
     }
 
-    let rule = parse_field_marker(marker, &logical_name, name_span)?;
+    let rule = parse_field_marker(marker, &field.ty, &logical_name, name_span)?;
 
     Ok(FieldIntermediateRepresentation {
         member,
@@ -326,9 +356,11 @@ fn parse_field_grammar(field: &Field, position: usize) -> Result<FieldIntermedia
 }
 
 /// Parse the single marker of the given `validate` `attribute` into the rule of a field.
+/// The declared type of the field is `ty`.
 /// The field is called `logical_name`, with the name span `name_span`.
 fn parse_field_marker(
     attribute: &Attribute,
+    ty: &Type,
     logical_name: &str,
     name_span: Span,
 ) -> Result<FieldRule> {
@@ -343,7 +375,7 @@ fn parse_field_marker(
 
     if let Meta::List(list) = &marker {
         if list.path.is_ident(RANGE_MARKER) {
-            return parse_field_range(list, logical_name, name_span);
+            return parse_field_range(list, ty, logical_name, name_span);
         }
         if list.path.is_ident(CUSTOM_MARKER) {
             return parse_field_custom(list, logical_name, name_span);
@@ -357,6 +389,7 @@ fn parse_field_marker(
     if path.is_ident(FINITE_MARKER) {
         return Ok(FieldRule::Finite {
             error_variant: naming::not_finite_variant(logical_name, name_span)?,
+            inner_ty: option_payload_type(ty)?,
         });
     }
     if path.is_ident(NESTED_MARKER) {
@@ -412,10 +445,17 @@ impl BoundKind<'_> {
 }
 
 /// Parse the arguments of the given `range` marker `list` into the rule of a field.
+/// The declared type of the field is `ty`.
 /// The field is called `logical_name`, with the name span `name_span`, which builds the error enum variant.
 /// The sugared form and the bound pair form both land on the same two bound expressions.
-fn parse_field_range(list: &MetaList, logical_name: &str, name_span: Span) -> Result<FieldRule> {
+fn parse_field_range(
+    list: &MetaList,
+    ty: &Type,
+    logical_name: &str,
+    name_span: Span,
+) -> Result<FieldRule> {
     let error_variant = naming::range_variant(logical_name, name_span)?;
+    let inner_ty = option_payload_type(ty)?;
     let arguments = list.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
     let mut argument_iterator = arguments.iter();
     let bounds = (
@@ -434,6 +474,7 @@ fn parse_field_range(list: &MetaList, logical_name: &str, name_span: Span) -> Re
             lower: lower.expression(),
             upper: upper.expression(),
             error_variant,
+            inner_ty,
         });
     }
     if let (Some(lower), Some(upper), None) = bounds {
@@ -441,6 +482,7 @@ fn parse_field_range(list: &MetaList, logical_name: &str, name_span: Span) -> Re
             lower: parse_bound(lower)?.expression(),
             upper: parse_bound(upper)?.expression(),
             error_variant,
+            inner_ty,
         });
     }
 
@@ -504,6 +546,44 @@ fn last_segment_is(path: &Path, segment_name: &str) -> bool {
     last_segment.ident == segment_name
 }
 
+/// Return the payload type of the given `ty` when it is written as an `Option` of one type, or nothing otherwise.
+/// A range check and a finite check read the payload under the `Some` pattern, so a `None` value passes them.
+/// The last segment of the path carries the meaning, so the function accepts every spelling of `Option`,
+/// such as `Option<T>`, `core::option::Option<T>` and `::std::option::Option<T>`.
+/// It reads the written type only. A type alias of an `Option` is no `Option` here and a type called `Option` always is,
+/// and the generated check names the absolute `Some` pattern, so the compiler rejects both.
+/// A segment called `Option` that carries no single type argument is an error, as is an `Option` of an `Option`,
+/// because the check removes one level only.
+fn option_payload_type(ty: &Type) -> Result<Option<Type>> {
+    let Type::Path(path_type) = ty else {
+        return Ok(None);
+    };
+    // A qualified path names an associated type, which no written `Option` reaches
+    if path_type.qself.is_some() {
+        return Ok(None);
+    }
+    let Some(last_segment) = path_type.path.segments.last() else {
+        return Ok(None);
+    };
+    if last_segment.ident != OPTION_TYPE {
+        return Ok(None);
+    }
+    let PathArguments::AngleBracketed(arguments) = &last_segment.arguments else {
+        return Err(Error::new_spanned(ty, OPTION_ARGUMENT_MESSAGE));
+    };
+    let mut argument_iterator = arguments.args.iter();
+    let (Some(GenericArgument::Type(payload_type)), None) =
+        (argument_iterator.next(), argument_iterator.next())
+    else {
+        return Err(Error::new_spanned(ty, OPTION_ARGUMENT_MESSAGE));
+    };
+    if option_payload_type(payload_type)?.is_some() {
+        return Err(Error::new_spanned(ty, OPTION_OF_OPTION_MESSAGE));
+    }
+
+    Ok(Some(payload_type.clone()))
+}
+
 /// Parse the given `variant` of a validated enum into its representation.
 /// The attributes of the variant reach the draft variant, and a marker belongs to the payload only.
 fn parse_variant(variant: &Variant) -> Result<VariantIntermediateRepresentation> {
@@ -539,13 +619,13 @@ fn parse_variant(variant: &Variant) -> Result<VariantIntermediateRepresentation>
 }
 
 /// Parse the fields of the given `variant` into the content of the variant.
-/// A unit variant carries nothing and a tuple variant carries exactly one payload.
+/// A unit variant carries nothing, a tuple variant carries exactly one payload and a struct variant carries named fields, which may be none.
 fn parse_variant_kind(variant: &Variant) -> Result<VariantKind> {
     let unnamed_fields = match &variant.fields {
         Fields::Unit => return Ok(VariantKind::Unit),
         Fields::Unnamed(unnamed_fields) => unnamed_fields,
         Fields::Named(named_fields) => {
-            return Err(Error::new_spanned(named_fields, VARIANT_SHAPE_MESSAGE));
+            return parse_variant_fields(named_fields, &variant.ident);
         }
     };
     let mut unnamed = unnamed_fields.unnamed.iter();
@@ -553,43 +633,71 @@ fn parse_variant_kind(variant: &Variant) -> Result<VariantKind> {
         return Err(Error::new_spanned(unnamed_fields, VARIANT_SHAPE_MESSAGE));
     };
 
-    parse_payload(payload, &variant.ident)
+    parse_payload(payload, &variant.ident, None).map(VariantKind::Payload)
 }
 
-/// Parse the single `payload` of the tuple variant called `variant_ident` into the content of the variant.
-/// The name of the variant builds the wrapper variant of a nested payload.
-fn parse_payload(payload: &Field, variant_ident: &Ident) -> Result<VariantKind> {
-    let mut docs: Vec<Attribute> = Vec::new();
-    let mut passthrough: Vec<TokenStream> = Vec::new();
-    let mut markers: Vec<&Attribute> = Vec::new();
-    for attribute in &payload.attrs {
-        let path = attribute.path();
-        if path.is_ident(DOC_ATTRIBUTE) {
-            docs.push(attribute.clone());
-        } else if path.is_ident(VALIDATE_ATTRIBUTE) {
-            markers.push(attribute);
-        } else if path.is_ident(SERDE_ATTRIBUTE) {
-            passthrough.push(attribute.meta.to_token_stream());
-        } else if path.is_ident(DRAFT_ATTR_ATTRIBUTE) {
-            passthrough.push(draft_attr_tokens(attribute)?);
-        } else if path.is_ident(FINAL_VALIDATION_ATTRIBUTE) {
-            return Err(Error::new_spanned(
-                attribute,
-                FIELD_FINAL_VALIDATION_MESSAGE,
-            ));
+/// Parse the given `named_fields` of the struct variant called `variant_ident` into the content of the variant.
+/// The list stays empty for a variant written with empty braces.
+/// Every field reports its own error, so a single compilation reports all of them.
+fn parse_variant_fields(named_fields: &FieldsNamed, variant_ident: &Ident) -> Result<VariantKind> {
+    let mut errors: Vec<Error> = Vec::new();
+    let mut fields: Vec<VariantFieldIntermediateRepresentation> = Vec::new();
+    for field in &named_fields.named {
+        match parse_variant_field(field, variant_ident) {
+            Ok(parsed_field) => fields.push(parsed_field),
+            Err(error) => errors.push(error),
         }
     }
+    accumulated(errors)?;
+
+    Ok(VariantKind::Struct { fields })
+}
+
+/// Parse the given named `field` of the struct variant called `variant_ident` into its representation.
+/// The field holds a payload like the one of a tuple variant, and its name also builds the wrapper variant of a nested field.
+fn parse_variant_field(
+    field: &Field,
+    variant_ident: &Ident,
+) -> Result<VariantFieldIntermediateRepresentation> {
+    // The caller passes a field of a named field list, which always carries its identifier
+    let ident = field
+        .ident
+        .as_ref()
+        .expect("a field of a named field list always carries a name");
+
+    Ok(VariantFieldIntermediateRepresentation {
+        ident: ident.clone(),
+        logical_name: naming::plain_name(&ident.to_string()).to_owned(),
+        payload: parse_payload(field, variant_ident, Some(ident))?,
+    })
+}
+
+/// Parse the given `payload` of the variant called `variant_ident` into its representation.
+/// A struct variant field also gives its `field_ident`, which builds the wrapper variant of a nested field
+/// and carries the diagnostic of a missing marker. The diagnostic of a tuple payload points at its type.
+fn parse_payload(
+    payload: &Field,
+    variant_ident: &Ident,
+    field_ident: Option<&Ident>,
+) -> Result<Payload> {
+    let SortedAttributes {
+        docs,
+        passthrough,
+        markers,
+    } = sort_field_attributes(&payload.attrs)?;
 
     let mut markers = markers.into_iter();
     let Some(marker) = markers.next() else {
-        return Err(Error::new(payload.ty.span(), PAYLOAD_MARKER_MESSAGE));
+        let missing_span = field_ident.map_or_else(|| payload.ty.span(), Ident::span);
+
+        return Err(Error::new(missing_span, PAYLOAD_MARKER_MESSAGE));
     };
     if let Some(extra_marker) = markers.next() {
         return Err(Error::new_spanned(extra_marker, PAYLOAD_MARKER_MESSAGE));
     }
-    let rule = parse_payload_marker(marker, variant_ident)?;
+    let rule = parse_payload_marker(marker, variant_ident, field_ident)?;
 
-    Ok(VariantKind::Payload {
+    Ok(Payload {
         ty: payload.ty.clone(),
         rule,
         docs,
@@ -598,9 +706,13 @@ fn parse_payload(payload: &Field, variant_ident: &Ident) -> Result<VariantKind> 
 }
 
 /// Parse the single marker of the given `validate` `attribute` into the rule of a variant payload.
-/// The payload belongs to the variant called `variant_ident`.
+/// The payload belongs to the variant called `variant_ident`, and a struct variant field also gives its `field_ident`.
 /// A payload accepts the two markers that delegate a rule, because the enum declares no rule of its own.
-fn parse_payload_marker(attribute: &Attribute, variant_ident: &Ident) -> Result<VariantRule> {
+fn parse_payload_marker(
+    attribute: &Attribute,
+    variant_ident: &Ident,
+    field_ident: Option<&Ident>,
+) -> Result<VariantRule> {
     let markers = attribute.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
     let mut markers = markers.into_iter();
     let Some(marker) = markers.next() else {
@@ -614,10 +726,7 @@ fn parse_payload_marker(attribute: &Attribute, variant_ident: &Ident) -> Result<
     };
     if path.is_ident(NESTED_MARKER) {
         return Ok(VariantRule::Nested {
-            wrapper_variant: naming::nested_wrapper_variant(
-                &variant_ident.to_string(),
-                variant_ident.span(),
-            )?,
+            wrapper_variant: payload_wrapper_variant(variant_ident, field_ident)?,
         });
     }
     if path.is_ident(SKIP_MARKER) {
@@ -625,6 +734,21 @@ fn parse_payload_marker(attribute: &Attribute, variant_ident: &Ident) -> Result<
     }
 
     Err(Error::new_spanned(path, PAYLOAD_MARKER_MESSAGE))
+}
+
+/// Build the wrapper variant of the nested payload of the variant called `variant_ident`.
+/// A tuple payload takes the name of the variant, and a struct variant field also gives its `field_ident`,
+/// so its wrapper names the variant and the field, with the span of the field.
+fn payload_wrapper_variant(variant_ident: &Ident, field_ident: Option<&Ident>) -> Result<Ident> {
+    let Some(field_ident) = field_ident else {
+        return naming::nested_wrapper_variant(&variant_ident.to_string(), variant_ident.span());
+    };
+
+    naming::variant_field_wrapper_variant(
+        &variant_ident.to_string(),
+        &field_ident.to_string(),
+        field_ident.span(),
+    )
 }
 
 /// Parse the given `final_validation` `attribute` into its representation.
@@ -730,8 +854,10 @@ fn used_error_parameters<'generics>(
 /// Return the tokens of every type that reaches the generated error enum of a validated type.
 /// A range field contributes its declared type, which the variant of the field carries twice as a bound and once as the rejected value.
 /// A finite field contributes its declared type, which the variant of the field carries once as the rejected value.
+/// An `Option` field contributes its whole declared type, which names the same parameters as its payload.
 /// A nested field contributes its declared type, whose own error the enum wraps.
 /// A nested variant payload contributes its declared type the same way.
+/// A nested struct variant field contributes its declared type the same way.
 /// A custom field contributes the error type that its function returns.
 /// A final validation contributes the error type that it returns.
 fn error_payload_types(
@@ -758,9 +884,9 @@ fn error_payload_types(
         | FieldRule::Nested { .. }
         | FieldRule::Skip => None,
     });
-    let nested_payload_types = variants.iter().filter_map(|variant| {
+    let nested_payload_types = variants.iter().flat_map(|variant| {
         variant
-            .nested_payload()
+            .nested_payloads()
             .map(|(payload_type, _)| payload_type.to_token_stream())
     });
     let final_validation_error_types = final_validations
@@ -864,7 +990,7 @@ fn check_error_parameters(generics: &Generics, used_parameters: &[&GenericParam]
 /// Check that the variants generated for the error enum of a validated type are all distinct.
 /// The enum carries one variant per range field and per finite field of `fields`,
 /// and one wrapper variant per nested field of `fields`, per custom field of `fields`,
-/// per nested payload of `variants` and per final validation of `final_validations`.
+/// per nested payload of `variants`, which a struct variant holds once per nested field, and per final validation of `final_validations`.
 fn check_error_enum_variants(
     fields: &[FieldIntermediateRepresentation],
     variants: &[VariantIntermediateRepresentation],
@@ -882,7 +1008,7 @@ fn check_error_enum_variants(
         }
     }
     for variant in variants {
-        if let Some((_, wrapper_variant)) = variant.nested_payload() {
+        for (_, wrapper_variant) in variant.nested_payloads() {
             error_variants.push(wrapper_variant.clone());
         }
     }
@@ -911,16 +1037,18 @@ fn check_error_enum_variants(
 mod tests {
     use proc_macro2::{Ident, Span, TokenStream};
     use quote::{ToTokens as _, quote};
-    use syn::{DeriveInput, Generics, Member, parse_str};
+    use syn::{DeriveInput, Generics, Member, Type, parse_str};
 
     use crate::{
         input::{
-            CUSTOM_MESSAGE, ERROR_PAYLOAD_SUBSET_MESSAGE, MARKER_MESSAGE, PAYLOAD_MARKER_MESSAGE,
-            PRIVATE_FIELD_MESSAGE, RANGE_MESSAGE, UNION_MESSAGE, VARIANT_MARKER_MESSAGE,
-            VARIANT_SHAPE_MESSAGE, parameter_name, parse, used_error_parameters,
+            CUSTOM_MESSAGE, ERROR_PAYLOAD_SUBSET_MESSAGE, FIELD_FINAL_VALIDATION_MESSAGE,
+            MARKER_MESSAGE, OPTION_ARGUMENT_MESSAGE, OPTION_OF_OPTION_MESSAGE,
+            PAYLOAD_MARKER_MESSAGE, PRIVATE_FIELD_MESSAGE, RANGE_MESSAGE, UNION_MESSAGE,
+            VARIANT_MARKER_MESSAGE, VARIANT_SHAPE_MESSAGE, option_payload_type, parameter_name,
+            parse, used_error_parameters,
         },
         intermediate_representation::{
-            FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
+            FieldIntermediateRepresentation, FieldRule, FinalValidation, Payload, Shape,
             TypeIntermediateRepresentation, VariantKind, VariantRule,
         },
     };
@@ -942,6 +1070,7 @@ mod tests {
                 lower: quote! { ::core::ops::Bound::Unbounded },
                 upper: quote! { ::core::ops::Bound::Unbounded },
                 error_variant: ident("ValueOutOfRange"),
+                inner_ty: None,
             },
         }
     }
@@ -956,6 +1085,7 @@ mod tests {
             passthrough: Vec::new(),
             rule: FieldRule::Finite {
                 error_variant: ident("ValueNotFinite"),
+                inner_ty: None,
             },
         }
     }
@@ -1031,6 +1161,28 @@ mod tests {
         tokens.to_string().split_whitespace().collect()
     }
 
+    /// Return the token text of the payload that the type written `declared_type` carries as an `Option`.
+    /// Return nothing when the written type is no `Option`.
+    /// The written type must parse and the detection must accept it.
+    fn detected_payload(declared_type: &str) -> Option<String> {
+        let parsed_type: Type = parse_str(declared_type).expect("the tested field type must parse");
+
+        option_payload_type(&parsed_type)
+            .expect("the tested field type must be accepted")
+            .map(|payload_type| token_text(&payload_type.to_token_stream()))
+    }
+
+    /// Return the message of the rejection that the type written `declared_type` gets from the detection of an `Option`.
+    /// The written type must parse and the detection must reject it.
+    fn rejected_payload(declared_type: &str) -> String {
+        let parsed_type: Type = parse_str(declared_type).expect("the tested field type must parse");
+        let Err(error) = option_payload_type(&parsed_type) else {
+            panic!("the tested field type must be rejected");
+        };
+
+        error.to_string()
+    }
+
     /// Return the messages of the rejections that the parsing of `source` produces.
     /// The source must parse as a derive input and the derive must reject it.
     fn rejection_messages(source: &str) -> Vec<String> {
@@ -1048,6 +1200,7 @@ mod tests {
 
     /// Return the description of every variant of `intermediate_representation`, in declaration order.
     /// A variant reads as its name, then its content, then the wrapper variant of a nested payload.
+    /// A struct variant reads as its name, then the description of each field in brackets.
     /// The descriptions come joined by a comma.
     fn variant_summary(intermediate_representation: &TypeIntermediateRepresentation) -> String {
         intermediate_representation
@@ -1055,14 +1208,28 @@ mod tests {
             .iter()
             .map(|variant| match &variant.kind {
                 VariantKind::Unit => format!("{} unit", variant.ident),
-                VariantKind::Payload {
+                VariantKind::Payload(Payload {
                     rule: VariantRule::Skip,
                     ..
-                } => format!("{} skip", variant.ident),
-                VariantKind::Payload {
+                }) => format!("{} skip", variant.ident),
+                VariantKind::Payload(Payload {
                     rule: VariantRule::Nested { wrapper_variant },
                     ..
-                } => format!("{} nested {wrapper_variant}", variant.ident),
+                }) => format!("{} nested {wrapper_variant}", variant.ident),
+                VariantKind::Struct { fields } => format!(
+                    "{} struct [{}]",
+                    variant.ident,
+                    fields
+                        .iter()
+                        .map(|field| match &field.payload.rule {
+                            VariantRule::Skip => format!("{} skip", field.ident),
+                            VariantRule::Nested { wrapper_variant } => {
+                                format!("{} nested {wrapper_variant}", field.ident)
+                            }
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                ),
             })
             .collect::<Vec<String>>()
             .join(", ")
@@ -1265,7 +1432,7 @@ mod tests {
             intermediate_representation
                 .variants
                 .iter()
-                .all(|variant| variant.nested_payload().is_none()),
+                .all(|variant| variant.nested_payloads().next().is_none()),
             "An enum of unit variants must reach no wrapper variant, which leaves the generated error enum empty"
         );
     }
@@ -1303,11 +1470,11 @@ mod tests {
     }
 
     #[test]
-    fn a_variant_with_named_fields_is_rejected() {
+    fn a_struct_variant_field_without_a_marker_is_rejected() {
         assert_eq!(
             rejection_messages("enum Command { Extend { fraction: f64 } }"),
-            vec![VARIANT_SHAPE_MESSAGE.to_owned()],
-            "A variant with named fields must be rejected"
+            vec![PAYLOAD_MARKER_MESSAGE.to_owned()],
+            "A struct variant field without a marker must be rejected like a payload without a marker"
         );
     }
 
@@ -1633,7 +1800,7 @@ mod tests {
             .fields
             .first()
             .expect("the accepted struct must carry its single field");
-        let FieldRule::Finite { error_variant } = &field.rule else {
+        let FieldRule::Finite { error_variant, .. } = &field.rule else {
             panic!("the finite marker must give a finite rule");
         };
 
@@ -1679,6 +1846,311 @@ mod tests {
                 "the same `SunShadowNotFinite` variant also comes from here".to_owned(),
             ],
             "Two finite fields whose names give the same error variant must be rejected"
+        );
+    }
+
+    #[test]
+    fn every_spelling_of_an_option_gives_its_payload() {
+        for (declared_type, expected_payload) in [
+            ("Option<f64>", "f64"),
+            ("core::option::Option<f64>", "f64"),
+            ("::std::option::Option<Vec<u8>>", "Vec<u8>"),
+            ("Option::<f64>", "f64"),
+        ] {
+            assert_eq!(
+                detected_payload(declared_type),
+                Some(expected_payload.to_owned()),
+                "The written type {declared_type} must give its payload {expected_payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_type_that_is_no_option_gives_no_payload() {
+        for declared_type in [
+            "f64",
+            "Vec<Option<f64>>",
+            "&Option<f64>",
+            "(Option<f64>,)",
+            "<Wrapper as Trait>::Option<f64>",
+        ] {
+            assert_eq!(
+                detected_payload(declared_type),
+                None,
+                "The written type {declared_type} is no Option, so it must give no payload"
+            );
+        }
+    }
+
+    #[test]
+    fn an_option_without_a_single_type_argument_is_rejected() {
+        for declared_type in ["Option", "Option<f64, u8>", "Option<'static>", "Option<3>"] {
+            assert_eq!(
+                rejected_payload(declared_type),
+                OPTION_ARGUMENT_MESSAGE,
+                "The written type {declared_type} carries no single type argument, so it must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn an_option_of_an_option_is_rejected() {
+        for declared_type in ["Option<Option<f64>>", "Option<core::option::Option<f64>>"] {
+            assert_eq!(
+                rejected_payload(declared_type),
+                OPTION_OF_OPTION_MESSAGE,
+                "The written type {declared_type} nests two Option levels, so it must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_range_field_written_as_an_option_carries_its_payload_type() {
+        let intermediate_representation =
+            accepted("struct Probe { #[validate(range(0.0..=1.0))] mass: Option<f64> }");
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+        let FieldRule::Range { inner_ty, .. } = &field.rule else {
+            panic!("the range marker must give a range rule");
+        };
+
+        assert_eq!(
+            inner_ty
+                .as_ref()
+                .map(|payload_type| token_text(&payload_type.to_token_stream())),
+            Some("f64".to_owned()),
+            "The rule must carry the payload type of the Option field"
+        );
+    }
+
+    #[test]
+    fn a_finite_field_written_as_an_option_carries_its_payload_type() {
+        let intermediate_representation =
+            accepted("struct Probe { #[validate(finite)] drag_coefficient: Option<f64> }");
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+        let FieldRule::Finite { inner_ty, .. } = &field.rule else {
+            panic!("the finite marker must give a finite rule");
+        };
+
+        assert_eq!(
+            inner_ty
+                .as_ref()
+                .map(|payload_type| token_text(&payload_type.to_token_stream())),
+            Some("f64".to_owned()),
+            "The rule must carry the payload type of the Option field"
+        );
+    }
+
+    #[test]
+    fn a_range_field_written_as_an_option_of_an_option_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "struct Probe { #[validate(range(0.0..=1.0))] mass: Option<Option<f64>> }"
+            ),
+            vec![OPTION_OF_OPTION_MESSAGE.to_owned()],
+            "A range field that nests two Option levels must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_nested_field_written_as_an_option_keeps_its_declared_type() {
+        let intermediate_representation =
+            accepted("struct Probe { #[validate(nested)] shadow: Option<Fraction> }");
+        let field = intermediate_representation
+            .fields
+            .first()
+            .expect("the accepted struct must carry its single field");
+
+        assert!(
+            matches!(field.rule, FieldRule::Nested { .. }),
+            "The nested marker must give a nested rule"
+        );
+        assert_eq!(
+            token_text(&field.ty.to_token_stream()),
+            "Option<Fraction>",
+            "A nested field must keep its whole declared type, which the blanket implementation of Option validates"
+        );
+    }
+
+    #[test]
+    fn a_parameter_inside_an_option_range_field_type_makes_the_error_enum_generic() {
+        let intermediate_representation = accepted(
+            "struct Panel<Number> { #[validate(range(Number::ZERO..=Number::ONE))] \
+             area: Option<Number> }",
+        );
+
+        assert!(
+            intermediate_representation.error_enum_is_generic,
+            "A range on an Option of a generic parameter must make the error enum generic"
+        );
+    }
+
+    #[test]
+    fn an_empty_struct_variant_is_kept_distinct_from_a_unit_variant() {
+        let intermediate_representation = accepted("enum Pointing { Nadir, SunPointing {} }");
+
+        assert_eq!(
+            variant_summary(&intermediate_representation),
+            "Nadir unit, SunPointing struct []",
+            "A struct variant without a field must stay a struct variant, distinct from a unit variant"
+        );
+    }
+
+    #[test]
+    fn a_struct_variant_with_a_nested_and_a_skip_field_is_accepted() {
+        let intermediate_representation = accepted(
+            "enum Pointing { Custom { #[validate(nested)] body: Body, \
+             #[validate(skip)] comment: String } }",
+        );
+
+        assert_eq!(
+            variant_summary(&intermediate_representation),
+            "Custom struct [body nested CustomBodyValidationError, comment skip]",
+            "Every field must keep its declaration order, its rule and its wrapper variant"
+        );
+    }
+
+    #[test]
+    fn a_raw_identifier_field_of_a_struct_variant_gives_the_wrapper_of_its_plain_name() {
+        let intermediate_representation =
+            accepted("enum Raw { Entry { #[validate(nested)] r#type: Kind } }");
+
+        assert_eq!(
+            variant_summary(&intermediate_representation),
+            "Entry struct [r#type nested EntryTypeValidationError]",
+            "A raw identifier field must keep its identifier and give the wrapper of its plain name"
+        );
+    }
+
+    #[test]
+    fn every_rule_marker_on_a_struct_variant_field_is_rejected() {
+        for marker in [
+            "range(0.0..=1.0)",
+            "finite",
+            "custom(check, error = CheckError)",
+        ] {
+            assert_eq!(
+                rejection_messages(&format!(
+                    "enum Command {{ Extend {{ #[validate({marker})] fraction: f64 }} }}"
+                )),
+                vec![PAYLOAD_MARKER_MESSAGE.to_owned()],
+                "The marker {marker} on a struct variant field must be rejected, because a variant declares no rule"
+            );
+        }
+    }
+
+    #[test]
+    fn two_markers_on_a_struct_variant_field_are_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "enum Command { Extend { #[validate(nested, skip)] fraction: Fraction } }"
+            ),
+            vec![PAYLOAD_MARKER_MESSAGE.to_owned()],
+            "A struct variant field takes one marker, so two markers must be rejected"
+        );
+    }
+
+    #[test]
+    fn every_bad_field_of_a_struct_variant_is_reported() {
+        assert_eq!(
+            rejection_messages("enum Command { Extend { fraction: f64, label: String } }"),
+            vec![
+                PAYLOAD_MARKER_MESSAGE.to_owned(),
+                PAYLOAD_MARKER_MESSAGE.to_owned(),
+            ],
+            "Each struct variant field without a marker must carry its own rejection"
+        );
+    }
+
+    #[test]
+    fn a_marker_on_a_struct_variant_is_rejected() {
+        assert_eq!(
+            rejection_messages("enum Pointing { #[validate(skip)] SunPointing {} }"),
+            vec![VARIANT_MARKER_MESSAGE.to_owned()],
+            "A marker on a struct variant must be rejected, because a marker belongs to a field"
+        );
+    }
+
+    #[test]
+    fn a_final_validation_on_a_struct_variant_field_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "enum Command { Extend { #[final_validation(check, error = CheckError)] \
+                 #[validate(skip)] fraction: f64 } }"
+            ),
+            vec![FIELD_FINAL_VALIDATION_MESSAGE.to_owned()],
+            "A final validation on a struct variant field must be rejected, because it describes a whole type"
+        );
+    }
+
+    #[test]
+    fn a_struct_variant_field_written_as_an_option_keeps_its_declared_type() {
+        let intermediate_representation =
+            accepted("enum Target { Orbit { #[validate(nested)] body: Option<Body> } }");
+        let variant = intermediate_representation
+            .variants
+            .first()
+            .expect("the accepted enum must carry its single variant");
+        let VariantKind::Struct { fields } = &variant.kind else {
+            panic!("a variant with named fields must give a struct variant");
+        };
+        let field = fields
+            .first()
+            .expect("the accepted struct variant must carry its single field");
+
+        assert!(
+            matches!(field.payload.rule, VariantRule::Nested { .. }),
+            "The nested marker must give a nested rule"
+        );
+        assert_eq!(
+            token_text(&field.payload.ty.to_token_stream()),
+            "Option<Body>",
+            "A nested struct variant field must keep its whole declared type, which the blanket implementation of Option validates"
+        );
+    }
+
+    #[test]
+    fn a_struct_variant_field_wrapper_that_collides_with_a_payload_wrapper_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "enum Target { CustomBody(#[validate(nested)] Body), \
+                 Custom { #[validate(nested)] body: Body } }"
+            ),
+            vec![
+                "the generated error variant `CustomBodyValidationError` would be generated twice"
+                    .to_owned(),
+                "the same `CustomBodyValidationError` variant also comes from here".to_owned(),
+            ],
+            "A struct variant field wrapper and a payload wrapper that share a name must be rejected"
+        );
+    }
+
+    #[test]
+    fn a_parameter_that_reaches_a_struct_variant_field_makes_the_error_enum_generic() {
+        let intermediate_representation = accepted(
+            "enum Sample<Number> { Measured { #[validate(nested)] measurement: Measurement<Number> } }",
+        );
+
+        assert!(
+            intermediate_representation.error_enum_is_generic,
+            "A parameter that reaches a struct variant field must make the error enum generic"
+        );
+    }
+
+    #[test]
+    fn a_parameter_that_reaches_no_struct_variant_field_is_rejected() {
+        assert_eq!(
+            rejection_messages(
+                "enum Sample<Number, Other> { Measured { #[validate(nested)] \
+                 measurement: Measurement<Number> } }"
+            ),
+            vec![ERROR_PAYLOAD_SUBSET_MESSAGE.to_owned()],
+            "The parameter that reaches no struct variant field must carry its own rejection"
         );
     }
 }

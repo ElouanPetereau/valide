@@ -2,7 +2,8 @@
 //!
 //! The generator emits one variant per range field, which carries the two evaluated bounds of the field and the rejected value.
 //! It emits one variant per finite field, which carries the rejected value.
-//! It emits one wrapper variant per nested variant of an enum, per final validation and per nested or custom field.
+//! The variant of a field written as an `Option` carries the payload type.
+//! It emits one wrapper variant per nested payload of an enum, which a struct variant holds once per nested field, per final validation and per nested or custom field.
 //! A variant only exists when at least one field, one variant or one attribute can produce it.
 //! A wrapper variant is transparent, so it displays the error it holds and forwards the source of that error.
 
@@ -11,7 +12,10 @@ use quote::quote;
 
 use crate::{
     expand::{ExpansionContext, doc, validate_trait},
-    intermediate_representation::{FieldRule, TypeIntermediateRepresentation},
+    intermediate_representation::{
+        FieldRule, Payload, TypeIntermediateRepresentation, VariantIntermediateRepresentation,
+        VariantKind,
+    },
 };
 
 /// Generate the validation error enum of the validated type of `context`, with its [`Display`](core::fmt::Display) and its [`Error`](core::error::Error).
@@ -32,7 +36,7 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
         .fields
         .iter()
         .filter_map(|field| {
-            let ty = &field.ty;
+            let ty = field.checked_ty();
             let value_doc = doc("Value that the validation rejected.");
 
             match &field.rule {
@@ -56,7 +60,7 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
                         },
                     })
                 }
-                FieldRule::Finite { error_variant } => {
+                FieldRule::Finite { error_variant, .. } => {
                     let variant_doc = doc(&format!(
                         "The value of the `{}` field is not a finite number.",
                         field.logical_name
@@ -77,19 +81,7 @@ pub(crate) fn expand(context: &ExpansionContext<'_>) -> TokenStream {
     let variant_wrappers = intermediate_representation
         .variants
         .iter()
-        .filter_map(|variant| {
-            let (payload_type, wrapper_variant) = variant.nested_payload()?;
-            let validate = validate_trait();
-            let variant_doc = doc(&format!(
-                "The validation of the `{}` variant failed.",
-                variant.ident
-            ));
-
-            Some(quote! {
-                #variant_doc
-                #wrapper_variant(<#payload_type as #validate>::Error),
-            })
-        });
+        .flat_map(nested_variant_wrappers);
     let final_wrappers =
         intermediate_representation
             .final_validations
@@ -204,6 +196,46 @@ fn implementation_generics(context: &ExpansionContext<'_>) -> (TokenStream, Toke
     (quote! { #impl_generics }, quote! { #where_clause })
 }
 
+/// Generate the wrapper variant of the given variant `payload`, whose documentation names the validated `subject`.
+/// Return nothing for a skip payload, which reaches no error enum.
+fn payload_wrapper(payload: &Payload, subject: &str) -> Option<TokenStream> {
+    let wrapper_variant = payload.nested_wrapper()?;
+    let payload_type = &payload.ty;
+    let validate = validate_trait();
+    let variant_doc = doc(&format!("The validation of {subject} failed."));
+
+    Some(quote! {
+        #variant_doc
+        #wrapper_variant(<#payload_type as #validate>::Error),
+    })
+}
+
+/// Generate the wrapper variants of the given `variant`, one per nested payload, in declaration order.
+/// The wrapper of a tuple payload documents the variant and the wrapper of a struct variant field documents the field too.
+fn nested_variant_wrappers(variant: &VariantIntermediateRepresentation) -> Vec<TokenStream> {
+    let variant_ident = &variant.ident;
+
+    match &variant.kind {
+        VariantKind::Unit => Vec::new(),
+        VariantKind::Payload(payload) => {
+            payload_wrapper(payload, &format!("the `{variant_ident}` variant"))
+                .into_iter()
+                .collect()
+        }
+        VariantKind::Struct { fields } => fields
+            .iter()
+            .filter_map(|field| {
+                let subject = format!(
+                    "the `{}` field of the `{variant_ident}` variant",
+                    field.logical_name
+                );
+
+                payload_wrapper(&field.payload, &subject)
+            })
+            .collect(),
+    }
+}
+
 /// Generate the body of the [`Display`](core::fmt::Display) implementation of the error enum of `intermediate_representation`.
 /// A range variant names its own field as a static text, then writes the two bounds it carries.
 /// A finite variant names its own field as a static text and writes nothing else.
@@ -222,7 +254,7 @@ fn display_body(intermediate_representation: &TypeIntermediateRepresentation) ->
                     }
                 });
             }
-            FieldRule::Finite { error_variant } => {
+            FieldRule::Finite { error_variant, .. } => {
                 let field_text = format!("{} must be a finite number", field.logical_name);
 
                 arms.push(quote! {
