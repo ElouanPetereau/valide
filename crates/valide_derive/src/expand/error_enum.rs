@@ -13,7 +13,8 @@ use quote::quote;
 use crate::{
     expand::{ExpansionContext, doc, validate_trait},
     intermediate_representation::{
-        FieldRule, TypeIntermediateRepresentation, VariantIntermediateRepresentation, VariantKind,
+        FieldRule, Payload, TypeIntermediateRepresentation, VariantIntermediateRepresentation,
+        VariantKind,
     },
 };
 
@@ -195,41 +196,41 @@ fn implementation_generics(context: &ExpansionContext<'_>) -> (TokenStream, Toke
     (quote! { #impl_generics }, quote! { #where_clause })
 }
 
+/// Generate the wrapper variant of the given variant `payload`, whose documentation names the validated `subject`.
+/// Return nothing for a skip payload, which reaches no error enum.
+fn payload_wrapper(payload: &Payload, subject: &str) -> Option<TokenStream> {
+    let wrapper_variant = payload.nested_wrapper()?;
+    let payload_type = &payload.ty;
+    let validate = validate_trait();
+    let variant_doc = doc(&format!("The validation of {subject} failed."));
+
+    Some(quote! {
+        #variant_doc
+        #wrapper_variant(<#payload_type as #validate>::Error),
+    })
+}
+
 /// Generate the wrapper variants of the given `variant`, one per nested payload, in declaration order.
 /// The wrapper of a tuple payload documents the variant and the wrapper of a struct variant field documents the field too.
 fn nested_variant_wrappers(variant: &VariantIntermediateRepresentation) -> Vec<TokenStream> {
     let variant_ident = &variant.ident;
-    let validate = validate_trait();
 
     match &variant.kind {
         VariantKind::Unit => Vec::new(),
-        VariantKind::Payload { .. } => variant
-            .nested_payload()
-            .map(|(payload_type, wrapper_variant)| {
-                let variant_doc = doc(&format!(
-                    "The validation of the `{variant_ident}` variant failed."
-                ));
-
-                quote! {
-                    #variant_doc
-                    #wrapper_variant(<#payload_type as #validate>::Error),
-                }
-            })
-            .into_iter()
-            .collect(),
+        VariantKind::Payload(payload) => {
+            payload_wrapper(payload, &format!("the `{variant_ident}` variant"))
+                .into_iter()
+                .collect()
+        }
         VariantKind::Struct { fields } => fields
             .iter()
             .filter_map(|field| {
-                let (field_type, wrapper_variant) = field.nested_payload()?;
-                let variant_doc = doc(&format!(
-                    "The validation of the `{}` field of the `{variant_ident}` variant failed.",
+                let subject = format!(
+                    "the `{}` field of the `{variant_ident}` variant",
                     field.logical_name
-                ));
+                );
 
-                Some(quote! {
-                    #variant_doc
-                    #wrapper_variant(<#field_type as #validate>::Error),
-                })
+                payload_wrapper(&field.payload, &subject)
             })
             .collect(),
     }

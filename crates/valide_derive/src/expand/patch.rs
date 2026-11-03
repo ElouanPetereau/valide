@@ -6,14 +6,14 @@
 //! The setter of a skip field only stays infallible while the type declares no final validation.
 //! An enum gets no setter, because a patch of an enum replaces the whole variant, which the `new` constructor already validates.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
 use crate::{
-    expand::{ExpansionContext, doc, patch_trait},
+    expand::{ExpansionContext, conversion_arm, doc, patch_trait},
     intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
-        VariantFieldIntermediateRepresentation, VariantKind, VariantRule,
+        FieldIntermediateRepresentation, FieldRule, Payload, Shape, TypeIntermediateRepresentation,
+        VariantRule,
     },
 };
 
@@ -98,35 +98,11 @@ fn conversion_body(intermediate_representation: &TypeIntermediateRepresentation)
         }
         Shape::Enum => {
             let type_ident = &intermediate_representation.ident;
-            let patch = patch_trait();
             // The scrutinee carries the generic arguments of the validated type, so the patterns name the type alone
-            let arms = intermediate_representation.variants.iter().map(|variant| {
-                let variant_ident = &variant.ident;
-
-                match &variant.kind {
-                    VariantKind::Unit => {
-                        quote! { #type_ident::#variant_ident => Self::#variant_ident, }
-                    }
-                    VariantKind::Payload { rule, .. } => match rule {
-                        VariantRule::Nested { .. } => quote! {
-                            #type_ident::#variant_ident(payload) => Self::#variant_ident(
-                                #patch::to_draft(&payload),
-                            ),
-                        },
-                        VariantRule::Skip => quote! {
-                            #type_ident::#variant_ident(payload) => Self::#variant_ident(payload),
-                        },
-                    },
-                    VariantKind::Struct { fields } => {
-                        let bindings = fields.iter().map(|field| &field.ident);
-                        let values = fields.iter().map(draft_variant_field_value);
-
-                        quote! {
-                            #type_ident::#variant_ident { #(#bindings),* } => Self::#variant_ident { #(#values),* },
-                        }
-                    }
-                }
-            });
+            let arms = intermediate_representation
+                .variants
+                .iter()
+                .map(|variant| conversion_arm(type_ident, variant, draft_payload_value));
 
             quote! {
                 match value {
@@ -150,18 +126,15 @@ fn draft_field_value(field: &FieldIntermediateRepresentation) -> TokenStream {
     quote! { value.#member }
 }
 
-/// Generate the draft value of the given struct variant `field`, read from the binding that carries the name of the field.
-/// A nested field converts itself back to its own draft, a skip field keeps the shorthand of its binding.
-fn draft_variant_field_value(field: &VariantFieldIntermediateRepresentation) -> TokenStream {
-    let field_ident = &field.ident;
-    match &field.rule {
-        VariantRule::Nested { .. } => {
-            let patch = patch_trait();
-
-            quote! { #field_ident: #patch::to_draft(&#field_ident) }
-        }
-        VariantRule::Skip => quote! { #field_ident },
+/// Generate the draft value that the conversion builds from the given `binding` of a variant `payload`.
+/// A nested payload converts itself back to its own draft. A skip payload gives nothing, so it moves its binding unchanged.
+fn draft_payload_value(binding: &Ident, payload: &Payload) -> Option<TokenStream> {
+    if matches!(payload.rule, VariantRule::Skip) {
+        return None;
     }
+    let patch = patch_trait();
+
+    Some(quote! { #patch::to_draft(&#binding) })
 }
 
 /// Generate the setter of the given `field` of the validated type of `context`.

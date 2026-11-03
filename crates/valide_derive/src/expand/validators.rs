@@ -12,9 +12,9 @@ use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
 use crate::{
-    expand::{ExpansionContext, doc, validate_trait},
+    expand::{ExpansionContext, doc, tuple_payload_binding, validate_trait},
     intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
+        FieldIntermediateRepresentation, FieldRule, Payload, Shape, TypeIntermediateRepresentation,
         VariantIntermediateRepresentation, VariantKind,
     },
 };
@@ -89,32 +89,18 @@ fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
         return TokenStream::new();
     }
 
-    let validate = validate_trait();
-    let error_constructor = context.error_constructor_turbofish();
     let mut nested_arms: Vec<TokenStream> = Vec::new();
     let mut plain_patterns: Vec<TokenStream> = Vec::new();
     for variant in &intermediate_representation.variants {
+        if let Some(nested_arm) = nested_arm(context, variant) {
+            nested_arms.push(nested_arm);
+
+            continue;
+        }
         let variant_ident = &variant.ident;
-        if let Some((payload_type, wrapper_variant)) = variant.nested_payload() {
-            nested_arms.push(quote! {
-                Self::#variant_ident(payload) => {
-                    ::core::result::Result::map_err(
-                        <#payload_type as #validate>::validate(payload),
-                        #error_constructor::#wrapper_variant,
-                    )?;
-                }
-            });
-
-            continue;
-        }
-        if let Some(struct_arm) = nested_struct_arm(context, variant) {
-            nested_arms.push(struct_arm);
-
-            continue;
-        }
         plain_patterns.push(match &variant.kind {
             VariantKind::Unit => quote! { Self::#variant_ident },
-            VariantKind::Payload { .. } => quote! { Self::#variant_ident(_) },
+            VariantKind::Payload(_) => quote! { Self::#variant_ident(_) },
             VariantKind::Struct { .. } => quote! { Self::#variant_ident { .. } },
         });
     }
@@ -128,42 +114,57 @@ fn variant_checks(context: &ExpansionContext<'_>) -> TokenStream {
     }
 }
 
-/// Generate the arm that checks the nested fields of the given struct `variant`, in declaration order.
-/// The arm binds every nested field by name and leaves the skip fields under `..`, and each check wraps the error of its field type.
-/// Return nothing for a unit variant, a tuple variant and a struct variant without a nested field, which all join the shared arm.
-fn nested_struct_arm(
+/// Generate the arm that checks the nested payloads of the given `variant`, in declaration order.
+/// The arm binds every nested payload and leaves the skip fields of a struct variant under `..`.
+/// Return nothing for a variant without a nested payload, which joins the shared arm.
+fn nested_arm(
     context: &ExpansionContext<'_>,
     variant: &VariantIntermediateRepresentation,
 ) -> Option<TokenStream> {
-    let VariantKind::Struct { fields } = &variant.kind else {
-        return None;
-    };
+    let variant_ident = &variant.ident;
+    match &variant.kind {
+        VariantKind::Unit => None,
+        VariantKind::Payload(payload) => {
+            let binding = tuple_payload_binding();
+            let check = payload_check(context, &binding, payload)?;
+
+            Some(quote! { Self::#variant_ident(#binding) => { #check } })
+        }
+        VariantKind::Struct { fields } => {
+            let (bindings, checks): (Vec<&Ident>, Vec<TokenStream>) = fields
+                .iter()
+                .filter_map(|field| {
+                    let check = payload_check(context, &field.ident, &field.payload)?;
+
+                    Some((&field.ident, check))
+                })
+                .unzip();
+            if checks.is_empty() {
+                return None;
+            }
+
+            Some(quote! { Self::#variant_ident { #(#bindings,)* .. } => { #(#checks)* } })
+        }
+    }
+}
+
+/// Generate the check of the given variant `payload`, read from its `binding`, which wraps the error of the payload type.
+/// Return nothing for a skip payload, which takes part in no validation.
+fn payload_check(
+    context: &ExpansionContext<'_>,
+    binding: &Ident,
+    payload: &Payload,
+) -> Option<TokenStream> {
+    let wrapper_variant = payload.nested_wrapper()?;
+    let ty = &payload.ty;
     let validate = validate_trait();
     let error_constructor = context.error_constructor_turbofish();
-    let (bindings, checks): (Vec<&Ident>, Vec<TokenStream>) = fields
-        .iter()
-        .filter_map(|field| {
-            let (field_type, wrapper_variant) = field.nested_payload()?;
-            let field_ident = &field.ident;
-
-            Some((
-                field_ident,
-                quote! {
-                    ::core::result::Result::map_err(
-                        <#field_type as #validate>::validate(#field_ident),
-                        #error_constructor::#wrapper_variant,
-                    )?;
-                },
-            ))
-        })
-        .unzip();
-    if checks.is_empty() {
-        return None;
-    }
-    let variant_ident = &variant.ident;
 
     Some(quote! {
-        Self::#variant_ident { #(#bindings,)* .. } => { #(#checks)* }
+        ::core::result::Result::map_err(
+            <#ty as #validate>::validate(#binding),
+            #error_constructor::#wrapper_variant,
+        )?;
     })
 }
 

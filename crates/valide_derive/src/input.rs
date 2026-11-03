@@ -17,7 +17,7 @@ use syn::{
 
 use crate::{
     intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
+        FieldIntermediateRepresentation, FieldRule, FinalValidation, Payload, Shape,
         TypeIntermediateRepresentation, VariantFieldIntermediateRepresentation,
         VariantIntermediateRepresentation, VariantKind, VariantRule,
     },
@@ -633,7 +633,7 @@ fn parse_variant_kind(variant: &Variant) -> Result<VariantKind> {
         return Err(Error::new_spanned(unnamed_fields, VARIANT_SHAPE_MESSAGE));
     };
 
-    parse_payload(payload, &variant.ident)
+    parse_payload(payload, &variant.ident, None).map(VariantKind::Payload)
 }
 
 /// Parse the given `named_fields` of the struct variant called `variant_ident` into the content of the variant.
@@ -654,8 +654,7 @@ fn parse_variant_fields(named_fields: &FieldsNamed, variant_ident: &Ident) -> Re
 }
 
 /// Parse the given named `field` of the struct variant called `variant_ident` into its representation.
-/// The attributes of the field reach the draft field the way the attributes of a tuple payload do,
-/// and the name of the variant plus the name of the field build the wrapper variant of a nested field.
+/// The field holds a payload like the one of a tuple variant, and its name also builds the wrapper variant of a nested field.
 fn parse_variant_field(
     field: &Field,
     variant_ident: &Ident,
@@ -665,36 +664,22 @@ fn parse_variant_field(
         .ident
         .as_ref()
         .expect("a field of a named field list always carries a name");
-    let logical_name = naming::plain_name(&ident.to_string()).to_owned();
-
-    let SortedAttributes {
-        docs,
-        passthrough,
-        markers,
-    } = sort_field_attributes(&field.attrs)?;
-
-    let mut markers = markers.into_iter();
-    let Some(marker) = markers.next() else {
-        return Err(Error::new(ident.span(), PAYLOAD_MARKER_MESSAGE));
-    };
-    if let Some(extra_marker) = markers.next() {
-        return Err(Error::new_spanned(extra_marker, PAYLOAD_MARKER_MESSAGE));
-    }
-    let rule = parse_payload_marker(marker, variant_ident, Some(ident))?;
 
     Ok(VariantFieldIntermediateRepresentation {
         ident: ident.clone(),
-        logical_name,
-        ty: field.ty.clone(),
-        rule,
-        docs,
-        passthrough,
+        logical_name: naming::plain_name(&ident.to_string()).to_owned(),
+        payload: parse_payload(field, variant_ident, Some(ident))?,
     })
 }
 
-/// Parse the single `payload` of the tuple variant called `variant_ident` into the content of the variant.
-/// The name of the variant builds the wrapper variant of a nested payload.
-fn parse_payload(payload: &Field, variant_ident: &Ident) -> Result<VariantKind> {
+/// Parse the given `payload` of the variant called `variant_ident` into its representation.
+/// A struct variant field also gives its `field_ident`, which builds the wrapper variant of a nested field
+/// and carries the diagnostic of a missing marker. The diagnostic of a tuple payload points at its type.
+fn parse_payload(
+    payload: &Field,
+    variant_ident: &Ident,
+    field_ident: Option<&Ident>,
+) -> Result<Payload> {
     let SortedAttributes {
         docs,
         passthrough,
@@ -703,14 +688,16 @@ fn parse_payload(payload: &Field, variant_ident: &Ident) -> Result<VariantKind> 
 
     let mut markers = markers.into_iter();
     let Some(marker) = markers.next() else {
-        return Err(Error::new(payload.ty.span(), PAYLOAD_MARKER_MESSAGE));
+        let missing_span = field_ident.map_or_else(|| payload.ty.span(), Ident::span);
+
+        return Err(Error::new(missing_span, PAYLOAD_MARKER_MESSAGE));
     };
     if let Some(extra_marker) = markers.next() {
         return Err(Error::new_spanned(extra_marker, PAYLOAD_MARKER_MESSAGE));
     }
-    let rule = parse_payload_marker(marker, variant_ident, None)?;
+    let rule = parse_payload_marker(marker, variant_ident, field_ident)?;
 
-    Ok(VariantKind::Payload {
+    Ok(Payload {
         ty: payload.ty.clone(),
         rule,
         docs,
@@ -1061,7 +1048,7 @@ mod tests {
             parse, used_error_parameters,
         },
         intermediate_representation::{
-            FieldIntermediateRepresentation, FieldRule, FinalValidation, Shape,
+            FieldIntermediateRepresentation, FieldRule, FinalValidation, Payload, Shape,
             TypeIntermediateRepresentation, VariantKind, VariantRule,
         },
     };
@@ -1221,20 +1208,20 @@ mod tests {
             .iter()
             .map(|variant| match &variant.kind {
                 VariantKind::Unit => format!("{} unit", variant.ident),
-                VariantKind::Payload {
+                VariantKind::Payload(Payload {
                     rule: VariantRule::Skip,
                     ..
-                } => format!("{} skip", variant.ident),
-                VariantKind::Payload {
+                }) => format!("{} skip", variant.ident),
+                VariantKind::Payload(Payload {
                     rule: VariantRule::Nested { wrapper_variant },
                     ..
-                } => format!("{} nested {wrapper_variant}", variant.ident),
+                }) => format!("{} nested {wrapper_variant}", variant.ident),
                 VariantKind::Struct { fields } => format!(
                     "{} struct [{}]",
                     variant.ident,
                     fields
                         .iter()
-                        .map(|field| match &field.rule {
+                        .map(|field| match &field.payload.rule {
                             VariantRule::Skip => format!("{} skip", field.ident),
                             VariantRule::Nested { wrapper_variant } => {
                                 format!("{} nested {wrapper_variant}", field.ident)
@@ -1445,7 +1432,7 @@ mod tests {
             intermediate_representation
                 .variants
                 .iter()
-                .all(|variant| variant.nested_payload().is_none()),
+                .all(|variant| variant.nested_payloads().next().is_none()),
             "An enum of unit variants must reach no wrapper variant, which leaves the generated error enum empty"
         );
     }
@@ -2117,11 +2104,11 @@ mod tests {
             .expect("the accepted struct variant must carry its single field");
 
         assert!(
-            matches!(field.rule, VariantRule::Nested { .. }),
+            matches!(field.payload.rule, VariantRule::Nested { .. }),
             "The nested marker must give a nested rule"
         );
         assert_eq!(
-            token_text(&field.ty.to_token_stream()),
+            token_text(&field.payload.ty.to_token_stream()),
             "Option<Body>",
             "A nested struct variant field must keep its whole declared type, which the blanket implementation of Option validates"
         );

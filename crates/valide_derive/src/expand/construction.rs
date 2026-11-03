@@ -6,14 +6,14 @@
 //! The unchecked constructor that builds the type from a draft while skipping the validation
 //! moves the fields of the draft and recurses into every nested field.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
 use crate::{
-    expand::{ExpansionContext, doc, validate_trait},
+    expand::{ExpansionContext, conversion_arm, doc, validate_trait},
     intermediate_representation::{
-        FieldIntermediateRepresentation, FieldRule, Shape, TypeIntermediateRepresentation,
-        VariantFieldIntermediateRepresentation, VariantKind, VariantRule,
+        FieldIntermediateRepresentation, FieldRule, Payload, Shape, TypeIntermediateRepresentation,
+        VariantRule,
     },
 };
 
@@ -125,35 +125,11 @@ fn unchecked_body(intermediate_representation: &TypeIntermediateRepresentation) 
         }
         Shape::Enum => {
             let draft_ident = &intermediate_representation.draft_ident;
-            let validate = validate_trait();
             // The scrutinee carries the generic arguments of the draft, so the patterns name the draft alone
-            let arms = intermediate_representation.variants.iter().map(|variant| {
-                let variant_ident = &variant.ident;
-
-                match &variant.kind {
-                    VariantKind::Unit => {
-                        quote! { #draft_ident::#variant_ident => Self::#variant_ident, }
-                    }
-                    VariantKind::Payload { ty, rule, .. } => match rule {
-                        VariantRule::Nested { .. } => quote! {
-                            #draft_ident::#variant_ident(payload) => Self::#variant_ident(
-                                <#ty as #validate>::from_draft_unchecked(payload),
-                            ),
-                        },
-                        VariantRule::Skip => quote! {
-                            #draft_ident::#variant_ident(payload) => Self::#variant_ident(payload),
-                        },
-                    },
-                    VariantKind::Struct { fields } => {
-                        let bindings = fields.iter().map(|field| &field.ident);
-                        let values = fields.iter().map(variant_field_value);
-
-                        quote! {
-                            #draft_ident::#variant_ident { #(#bindings),* } => Self::#variant_ident { #(#values),* },
-                        }
-                    }
-                }
-            });
+            let arms = intermediate_representation
+                .variants
+                .iter()
+                .map(|variant| conversion_arm(draft_ident, variant, unchecked_payload_value));
 
             quote! {
                 match draft {
@@ -178,18 +154,14 @@ fn field_value(field: &FieldIntermediateRepresentation) -> TokenStream {
     quote! { draft.#member }
 }
 
-/// Generate the value that the unchecked constructor moves into the given struct variant `field`,
-/// read from the binding that carries the name of the field.
-/// A nested field builds its own type from its own draft, a skip field keeps the shorthand of its binding.
-fn variant_field_value(field: &VariantFieldIntermediateRepresentation) -> TokenStream {
-    let field_ident = &field.ident;
-    match &field.rule {
-        VariantRule::Nested { .. } => {
-            let ty = &field.ty;
-            let validate = validate_trait();
-
-            quote! { #field_ident: <#ty as #validate>::from_draft_unchecked(#field_ident) }
-        }
-        VariantRule::Skip => quote! { #field_ident },
+/// Generate the value that the unchecked constructor builds from the given `binding` of a variant `payload`.
+/// A nested payload builds its own type from its own draft. A skip payload gives nothing, so it moves its binding unchanged.
+fn unchecked_payload_value(binding: &Ident, payload: &Payload) -> Option<TokenStream> {
+    if matches!(payload.rule, VariantRule::Skip) {
+        return None;
     }
+    let ty = &payload.ty;
+    let validate = validate_trait();
+
+    Some(quote! { <#ty as #validate>::from_draft_unchecked(#binding) })
 }
