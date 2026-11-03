@@ -9,6 +9,7 @@ use core::{
     ops::Bound,
 };
 
+use serde::Deserialize;
 use valide::{Patch as _, Validate as _};
 
 /// Standard gravitational parameter of the Earth in cubic meters per second squared (m³/s²).
@@ -34,7 +35,8 @@ impl Precision for f64 {
 }
 
 /// Fraction bounded to [0.0, 1.0].
-#[derive(Clone, PartialEq, Debug, valide_derive::Validate, valide_derive::Patch)]
+#[derive(Clone, PartialEq, Debug, Deserialize, valide_derive::Validate, valide_derive::Patch)]
+#[serde(try_from = "FractionDraft")]
 struct Fraction(
     /// The fraction itself.
     #[validate(range(0.0..=1.0))]
@@ -42,7 +44,8 @@ struct Fraction(
 );
 
 /// Celestial body with a strictly positive gravitational parameter.
-#[derive(Clone, PartialEq, Debug, valide_derive::Validate, valide_derive::Patch)]
+#[derive(Clone, PartialEq, Debug, Deserialize, valide_derive::Validate, valide_derive::Patch)]
+#[serde(try_from = "CelestialBodyDraft")]
 struct CelestialBody {
     /// Standard gravitational parameter in cubic meters per second squared (m³/s²).
     #[validate(range(Bound::Excluded(0.0), Bound::Excluded(f64::INFINITY)))]
@@ -59,7 +62,8 @@ struct Measurement<Number: Precision + Debug>(
 );
 
 /// Pointing of a spacecraft.
-#[derive(Clone, PartialEq, Debug, valide_derive::Validate, valide_derive::Patch)]
+#[derive(Clone, PartialEq, Debug, Deserialize, valide_derive::Validate, valide_derive::Patch)]
+#[serde(try_from = "PointingDraft")]
 enum Pointing {
     /// Point at the Sun, a struct variant without a field.
     SunPointing {},
