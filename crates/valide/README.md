@@ -167,7 +167,6 @@ the error enum is `ValueOutOfRange` and its finite variant is `ValueNotFinite`.
 ### Enums
 
 An enum is supported. A variant is a unit variant, a tuple variant with exactly one payload that carries the marker, such as `Custom(#[validate(nested)] CelestialBody)`, or a struct variant whose every field carries a marker, such as `Custom { #[validate(nested)] body: CelestialBody, #[validate(nested)] other_body: Option<CelestialBody>, #[validate(skip)] label: String }`.
-A struct variant may carry no field at all, so the draft variant stays a struct variant and `#[draft_attr(serde(deny_unknown_fields))]` applies to it.
 A payload and a struct variant field accept `nested` and `skip` only.
 The enum declares no rule of its own, so every rule lives in the payload type and a public variant constructor bypasses nothing.
 The documentation, the serde attributes and the `draft_attr` payloads of a struct variant field reach the draft field, like the ones of a struct field.
