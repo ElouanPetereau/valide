@@ -201,12 +201,10 @@ fn field_validator(
         } => {
             let ty = field.checked_ty();
             let checked = checked_place(field);
-
-            optional_check(
+            // The bounds are evaluated before the `Some` pattern, so a bound expression never sees its binding
+            let check = optional_check(
                 field,
                 quote! {
-                    let lower: ::core::ops::Bound<#ty> = #lower;
-                    let upper: ::core::ops::Bound<#ty> = #upper;
                     if !::core::ops::RangeBounds::contains(
                         &(
                             ::core::ops::Bound::as_ref(&lower),
@@ -221,7 +219,13 @@ fn field_validator(
                         });
                     }
                 },
-            )
+            );
+
+            quote! {
+                let lower: ::core::ops::Bound<#ty> = #lower;
+                let upper: ::core::ops::Bound<#ty> = #upper;
+                #check
+            }
         }
         // The check calls the unqualified function, so a generic field reads it from the bound of its own type
         FieldRule::Finite { error_variant, .. } => {
@@ -281,12 +285,12 @@ fn field_validator(
 }
 
 /// Return the place expression that the range check or the finite check of the `field` reads.
-/// The payload of an `Option` field comes through the `value` reference of the `Some` pattern,
+/// The payload of an `Option` field comes through the `__valide_payload` reference of the `Some` pattern,
 /// so the place dereferences it and every method call resolves as it does on the field itself.
 /// Every other field is read on `self`.
 fn checked_place(field: &FieldIntermediateRepresentation) -> TokenStream {
     if field.option_payload_ty().is_some() {
-        return quote! { (*value) };
+        return quote! { (*__valide_payload) };
     }
     let member = &field.member;
 
@@ -302,7 +306,7 @@ fn optional_check(field: &FieldIntermediateRepresentation, check: TokenStream) -
     let member = &field.member;
 
     quote! {
-        if let ::core::option::Option::Some(value) = &self.#member {
+        if let ::core::option::Option::Some(__valide_payload) = &self.#member {
             #check
         }
     }
