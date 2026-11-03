@@ -187,7 +187,7 @@ Forward another representation with `#[draft_attr(serde(...))]`.
   A direct call on an invalid draft builds an invalid value.
 - The derive reads `Option` from the written type of a range field or a finite field.
   A type alias of `Option<T>` is checked as a whole value, which fails to compile against bounds of type `T`.
-  An `Option<Option<T>>` is rejected wit han error.
+  An `Option<Option<T>>` is rejected with an error.
 - Generics are supported with some caveats
   - A generic type gets no inferred bounds.
     Declare every bound yourself, the macro copies the generics and the where clause verbatim onto every generated item, and a missing bound fails with the ordinary compiler error.
